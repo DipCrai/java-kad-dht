@@ -20,6 +20,7 @@ public class KadConfig {
     private final Duration bootstrapInterval;
     private final Duration pendingTimeout;
     private final Duration providerRecordTTL;
+    private final Duration providerAddrTTL;
     private final Duration recordMaxAge;
     private final Duration recordReplicationInterval;
     private final Duration recordPublicationInterval;
@@ -46,6 +47,7 @@ public class KadConfig {
         this.bootstrapInterval = builder.bootstrapInterval;
         this.pendingTimeout = builder.pendingTimeout;
         this.providerRecordTTL = builder.providerRecordTTL;
+        this.providerAddrTTL = builder.providerAddrTTL;
         this.recordMaxAge = builder.recordMaxAge;
         this.recordReplicationInterval = builder.recordReplicationInterval;
         this.recordPublicationInterval = builder.recordPublicationInterval;
@@ -72,6 +74,7 @@ public class KadConfig {
     public Duration getBootstrapInterval() { return bootstrapInterval; }
     public Duration getPendingTimeout() { return pendingTimeout; }
     public Duration getProviderRecordTTL() { return providerRecordTTL; }
+    public Duration getProviderAddrTTL() { return providerAddrTTL; }
     public Duration getRecordMaxAge() { return recordMaxAge; }
     public Duration getRecordReplicationInterval() { return recordReplicationInterval; }
     public Duration getRecordPublicationInterval() { return recordPublicationInterval; }
@@ -103,6 +106,7 @@ public class KadConfig {
         private Duration bootstrapInterval = Duration.ofMinutes(5);
         private Duration pendingTimeout = Duration.ofSeconds(60);
         private Duration providerRecordTTL = Duration.ofHours(48);
+        private Duration providerAddrTTL = Duration.ofMinutes(30);
         private Duration recordMaxAge = Duration.ofHours(48);
         private Duration recordReplicationInterval = Duration.ofHours(1);
         private Duration recordPublicationInterval = Duration.ofHours(22);
@@ -130,6 +134,7 @@ public class KadConfig {
         public Builder bootstrapInterval(Duration bootstrapInterval) { this.bootstrapInterval = bootstrapInterval; return this; }
         public Builder pendingTimeout(Duration pendingTimeout) { this.pendingTimeout = pendingTimeout; return this; }
         public Builder providerRecordTTL(Duration providerRecordTTL) { this.providerRecordTTL = providerRecordTTL; return this; }
+        public Builder providerAddrTTL(Duration providerAddrTTL) { this.providerAddrTTL = providerAddrTTL; return this; }
         public Builder recordMaxAge(Duration recordMaxAge) { this.recordMaxAge = recordMaxAge; return this; }
         public Builder recordReplicationInterval(Duration recordReplicationInterval) { this.recordReplicationInterval = recordReplicationInterval; return this; }
         public Builder recordPublicationInterval(Duration recordPublicationInterval) { this.recordPublicationInterval = recordPublicationInterval; return this; }

@@ -53,7 +53,7 @@ public class KadDht {
                 config.getValidator() != null ? config.getValidator() : RecordValidator.NOOP);
         this.providerStore = new MemoryProviderStore(config.getMaxProvidedKeys(), config.getMaxProvidersPerKey());
 
-        this.protocol = new KademliaProtocol(config.getProtocolName(), config.getKValue(), config.getSubstreamTimeout(), config.getProviderRecordTTL());
+        this.protocol = new KademliaProtocol(config.getProtocolName(), config.getKValue(), config.getSubstreamTimeout(), config.getProviderRecordTTL(), config.getProviderAddrTTL());
         this.protocol.setRoutingTable(routingTable);
         this.protocol.setRecordStore(recordStore);
         this.protocol.setProviderStore(providerStore);
@@ -234,7 +234,7 @@ public class KadDht {
                     if (closest.isEmpty()) return CompletableFuture.completedFuture(true);
 
                     ProviderRecord local = new ProviderRecord(key, host.getPeerId(),
-                            Instant.now().plus(config.getProviderRecordTTL()), getSelfAddresses());
+                            Instant.now().plus(config.getProviderRecordTTL()), Instant.now().plus(config.getProviderAddrTTL()), getSelfAddresses());
                     providerStore.addProvider(local);
                     metrics.providersStored.incrementAndGet();
 

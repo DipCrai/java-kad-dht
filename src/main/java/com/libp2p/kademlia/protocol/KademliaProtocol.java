@@ -24,6 +24,7 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
     private final int kValue;
     private final Duration substreamTimeout;
     private final Duration providerRecordTTL;
+    private final Duration providerAddrTTL;
     private volatile RoutingTable routingTable;
     private volatile Host host;
     private volatile RecordStore recordStore;
@@ -31,11 +32,12 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
     private volatile com.libp2p.kademlia.records.RecordValidator validator = com.libp2p.kademlia.records.RecordValidator.NOOP;
     private volatile boolean serverMode = true;
 
-    public KademliaProtocol(String protocolName, int kValue, Duration substreamTimeout, Duration providerRecordTTL) {
+    public KademliaProtocol(String protocolName, int kValue, Duration substreamTimeout, Duration providerRecordTTL, Duration providerAddrTTL) {
         this.protocolName = protocolName;
         this.kValue = kValue;
         this.substreamTimeout = substreamTimeout;
         this.providerRecordTTL = providerRecordTTL;
+        this.providerAddrTTL = providerAddrTTL;
     }
 
     @Override
@@ -154,13 +156,14 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
     Dht.Message handleAddProvider(Dht.Message req, PeerId requester) {
         byte[] key = req.getKey().toByteArray();
         if (key.length == 0 || key.length > 80) return Dht.Message.newBuilder().setType(Dht.Message.MessageType.ADD_PROVIDER).build();
+        if (!isValidProviderKey(key)) return Dht.Message.newBuilder().setType(Dht.Message.MessageType.ADD_PROVIDER).build();
         for (Dht.Message.Peer p : req.getProviderPeersList()) {
             PeerId providerId = new PeerId(p.getId().toByteArray());
             if (!providerId.equals(requester)) continue;
             List<Multiaddr> addrs = new ArrayList<>();
             for (ByteString ab : p.getAddrsList()) { try { addrs.add(Multiaddr.deserialize(ab.toByteArray())); } catch (Exception ignored) {} }
             if (providerStore != null) {
-                providerStore.addProvider(new ProviderRecord(key, providerId, Instant.now().plus(providerRecordTTL), addrs));
+                providerStore.addProvider(new ProviderRecord(key, providerId, Instant.now().plus(providerRecordTTL), Instant.now().plus(providerAddrTTL), addrs));
             }
         }
         return Dht.Message.newBuilder().setType(Dht.Message.MessageType.ADD_PROVIDER).build();
@@ -209,7 +212,7 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
                 PeerId providerId = new PeerId(p.getId().toByteArray());
                 List<Multiaddr> addrs = new ArrayList<>();
                 for (ByteString ab : p.getAddrsList()) { try { addrs.add(Multiaddr.deserialize(ab.toByteArray())); } catch (Exception ignored) {} }
-                providers.add(new ProviderRecord(msg.getKey().toByteArray(), providerId, Instant.now().plus(providerRecordTTL), addrs));
+                providers.add(new ProviderRecord(msg.getKey().toByteArray(), providerId, Instant.now().plus(providerRecordTTL), Instant.now().plus(providerAddrTTL), addrs));
             } catch (Exception ignored) {}
         }
         return providers;
@@ -265,7 +268,7 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
                     List<Multiaddr> addrs = new ArrayList<>();
                     for (ByteString ab : p.getAddrsList()) { try { addrs.add(Multiaddr.deserialize(ab.toByteArray())); } catch (Exception ignored) {} }
                     ProviderRecord pr = new ProviderRecord(msg.getKey().toByteArray(), providerId,
-                            Instant.now().plus(Duration.ofHours(48)), addrs);
+                            Instant.now().plus(Duration.ofHours(48)), Instant.now().plus(Duration.ofHours(24)), addrs);
                     provs.add(pr);
                     if (store != null) store.addProvider(pr);
                 } catch (Exception ignored) {}
@@ -281,6 +284,12 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
             }
             return new GetProvidersResponse(provs, closer);
         }
+    }
+
+    private boolean isValidProviderKey(byte[] key) {
+        if (key.length == 32) return true;
+        if (key.length == 34 && key[0] == 0x12 && key[1] == 0x20) return true;
+        return false;
     }
 
     public interface KademliaController {

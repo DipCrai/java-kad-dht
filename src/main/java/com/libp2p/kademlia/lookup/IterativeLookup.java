@@ -76,10 +76,11 @@ public class IterativeLookup {
         return protocol.sendFindNode(target, next)
                 .thenApply(resp -> {
                     markSucceeded(next);
-                    updateRoutingTable(next);
+                    PeerEntry nextEntry = find(next);
+                    updateRoutingTable(next, nextEntry != null ? nextEntry.addresses : List.of());
                     for (KadPeer p : resp.closerPeers()) {
                         if (!contains(p.nodeId)) { addHeard(p.nodeId, p.multiaddrs); }
-                        updateRoutingTable(p.nodeId);
+                        updateRoutingTable(p.nodeId, p.multiaddrs);
                     }
                     checkTermination();
                     return new FindNodeResult(resp.closerPeers(), List.of(next));
@@ -99,10 +100,11 @@ public class IterativeLookup {
         try {
             var resp = protocol.sendGetValue(target, next).get(peerTimeout.toSeconds(), TimeUnit.SECONDS);
             markSucceeded(next);
-            updateRoutingTable(next);
+            PeerEntry nextEntry = find(next);
+            updateRoutingTable(next, nextEntry != null ? nextEntry.addresses : List.of());
             for (KadPeer p : resp.closerPeers()) {
                 if (!contains(p.nodeId)) addHeard(p.nodeId, p.multiaddrs);
-                updateRoutingTable(p.nodeId);
+                updateRoutingTable(p.nodeId, p.multiaddrs);
             }
             checkTermination();
             Record newRecord = resp.record().orElse(null);
@@ -134,10 +136,11 @@ public class IterativeLookup {
         try {
             var resp = protocol.sendGetProviders(target, next).get(peerTimeout.toSeconds(), TimeUnit.SECONDS);
             markSucceeded(next);
-            updateRoutingTable(next);
+            PeerEntry nextEntry = find(next);
+            updateRoutingTable(next, nextEntry != null ? nextEntry.addresses : List.of());
             for (KadPeer p : resp.closerPeers()) {
                 if (!contains(p.nodeId)) addHeard(p.nodeId, p.multiaddrs);
-                updateRoutingTable(p.nodeId);
+                updateRoutingTable(p.nodeId, p.multiaddrs);
             }
             checkTermination();
             collectedProviders.addAll(resp.providers());
@@ -151,10 +154,10 @@ public class IterativeLookup {
         }
     }
 
-    private void updateRoutingTable(PeerId peerId) {
-        if (host != null) {
+    private void updateRoutingTable(PeerId peerId, List<io.libp2p.core.multiformats.Multiaddr> addrs) {
+        if (host != null && addrs != null && !addrs.isEmpty()) {
             try {
-                host.getAddressBook().getAddrs(peerId).get(1, TimeUnit.SECONDS);
+                host.getAddressBook().addAddrs(peerId, 1800, addrs.toArray(io.libp2p.core.multiformats.Multiaddr[]::new));
             } catch (Exception ignored) {}
         }
     }
@@ -163,10 +166,13 @@ public class IterativeLookup {
 
     public void onResponse(PeerId peer, List<KadPeer> closerPeers) {
         markSucceeded(peer);
+        PeerEntry peerEntry = find(peer);
+        updateRoutingTable(peer, peerEntry != null ? peerEntry.addresses : List.of());
         boolean madeProgress = false;
         if (closerPeers != null) {
             for (KadPeer p : closerPeers) {
                 if (!contains(p.nodeId)) { addHeard(p.nodeId, p.multiaddrs); madeProgress = true; }
+                updateRoutingTable(p.nodeId, p.multiaddrs);
             }
         }
         noProgressCount = madeProgress ? 0 : noProgressCount + 1;

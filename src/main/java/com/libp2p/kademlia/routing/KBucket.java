@@ -2,7 +2,6 @@ package com.libp2p.kademlia.routing;
 
 import io.libp2p.core.PeerId;
 
-import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -11,13 +10,11 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
 public class KBucket {
     private final int k;
-    private final Duration pendingTimeout;
     private final List<KBucketEntry> entries = new CopyOnWriteArrayList<>();
     private final List<KBucketEntry> replacementCache = new ArrayList<>();
 
-    public KBucket(int k, Duration pendingTimeout) {
+    public KBucket(int k) {
         this.k = k;
-        this.pendingTimeout = pendingTimeout;
     }
 
     public synchronized InsertResult insert(KBucketEntry entry) {
@@ -33,17 +30,6 @@ public class KBucket {
         if (entries.size() < k) {
             entries.add(0, entry);
             return InsertResult.INSERTED;
-        }
-
-        KBucketEntry oldest = entries.get(entries.size() - 1);
-        if (Duration.between(oldest.getLastSeen(), Instant.now()).compareTo(pendingTimeout) > 0) {
-            entries.remove(entries.size() - 1);
-            if (!replacementCache.isEmpty()) {
-                entries.add(0, replacementCache.remove(0));
-            } else {
-                entries.add(0, entry);
-            }
-            return InsertResult.EVICTED;
         }
 
         replacementCache.remove(entry);
@@ -113,6 +99,6 @@ public class KBucket {
     }
 
     public enum InsertResult {
-        INSERTED, ALREADY_PRESENT, FULL, EVICTED, PING
+        INSERTED, ALREADY_PRESENT, PING
     }
 }

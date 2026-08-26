@@ -16,7 +16,7 @@ public class RoutingTable {
     private final Set<PeerId> allPeers = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     public RoutingTable(PeerId localPeerId, int k, Duration pendingTimeout) {
-        this(localPeerId, k, pendingTimeout, 256);
+        this(localPeerId, k, 256);
     }
 
     public void setLocalPeerId(PeerId peerId) {
@@ -25,12 +25,16 @@ public class RoutingTable {
     }
 
     public RoutingTable(PeerId localPeerId, int k, Duration pendingTimeout, int numBuckets) {
+        this(localPeerId, k, numBuckets);
+    }
+
+    public RoutingTable(PeerId localPeerId, int k, int numBuckets) {
         this.localPeerId = localPeerId;
         this.localKey = localPeerId != null ? com.libp2p.kademlia.XorId.fromPeerId(localPeerId) : new byte[32];
         this.k = k;
         this.buckets = new KBucket[numBuckets];
         for (int i = 0; i < numBuckets; i++) {
-            buckets[i] = new KBucket(k, pendingTimeout);
+            buckets[i] = new KBucket(k);
         }
     }
 
@@ -39,7 +43,7 @@ public class RoutingTable {
         int bucketIdx = com.libp2p.kademlia.XorId.bucketIndex(localKey, com.libp2p.kademlia.XorId.fromPeerId(peerId));
         KBucketEntry entry = new KBucketEntry(peerId, addresses, Instant.now());
         KBucket.InsertResult result = buckets[bucketIdx].insert(entry);
-        if (result == KBucket.InsertResult.INSERTED || result == KBucket.InsertResult.EVICTED) {
+        if (result == KBucket.InsertResult.INSERTED) {
             allPeers.add(peerId);
             return InsertOutcome.INSERTED;
         }

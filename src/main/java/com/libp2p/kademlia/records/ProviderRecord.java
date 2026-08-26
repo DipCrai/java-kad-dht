@@ -14,19 +14,32 @@ public class ProviderRecord {
     private final byte[] key;
     private final PeerId provider;
     private final Instant expires;
+    private final Instant addrExpiry;
     private final List<Multiaddr> addresses;
 
-    public ProviderRecord(byte[] key, PeerId provider, Instant expires, List<Multiaddr> addresses) {
+    public ProviderRecord(byte[] key, PeerId provider, Instant expires, Instant addrExpiry, List<Multiaddr> addresses) {
         this.key = key.clone();
         this.provider = provider;
         this.expires = expires;
+        this.addrExpiry = addrExpiry;
         this.addresses = new ArrayList<>(addresses);
+    }
+
+    public ProviderRecord(byte[] key, PeerId provider, Instant expires, List<Multiaddr> addresses) {
+        this(key, provider, expires, expires, addresses);
     }
 
     public byte[] getKey() { return key.clone(); }
     public PeerId getProvider() { return provider; }
     public Instant getExpires() { return expires; }
+    public Instant getAddrExpiry() { return addrExpiry; }
     public List<Multiaddr> getAddresses() { return new ArrayList<>(addresses); }
+
+    public List<Multiaddr> getAliveAddresses() {
+        Instant now = Instant.now();
+        if (addrExpiry != null && now.isAfter(addrExpiry)) return List.of();
+        return new ArrayList<>(addresses);
+    }
 
     public boolean isExpired() {
         return isExpired(Instant.now());
@@ -56,6 +69,7 @@ public class ProviderRecord {
         return "ProviderRecord{key=" + Arrays.toString(key) +
                 ", provider=" + provider +
                 ", expires=" + expires +
+                ", addrExpiry=" + addrExpiry +
                 ", addresses.size=" + addresses.size() +
                 '}';
     }
