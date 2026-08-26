@@ -93,6 +93,7 @@ public class KadDht {
         if (running) return CompletableFuture.completedFuture(null);
         if (host == null) throw new IllegalStateException("setHost() first");
         running = true;
+        protocol.setServerMode(config.getMode().isServer());
         rtRefresh.start();
 
         gcTask = scheduler.scheduleWithFixedDelay(() -> {
@@ -185,9 +186,11 @@ public class KadDht {
                     Record best = selectBestRecord(collected);
 
                     List<KadPeer> stalePeers = new ArrayList<>();
+                    Map<PeerId, Record> peerRecords = result.getPeerRecords();
                     for (KadPeer p : result.getQueriedPeers()) {
                         if (!routingTable.getAllPeers().contains(p.nodeId)) continue;
-                        boolean peerHadValue = result.getRecord() != null && Arrays.equals(result.getRecord().getValue(), best.getValue());
+                        Record peerRec = peerRecords.get(p.nodeId);
+                        boolean peerHadValue = peerRec != null && Arrays.equals(peerRec.getValue(), best.getValue());
                         if (!peerHadValue) stalePeers.add(p);
                     }
 
@@ -270,7 +273,7 @@ public class KadDht {
             seed = getBootstrapSeeds(target);
         }
         IterativeLookup lookup = new IterativeLookup(target, seed, config.getKValue(),
-                config.getAlphaValue(), config.getBetaValue(), config.getSubstreamTimeout(), protocol);
+                config.getAlphaValue(), config.getBetaValue(), config.getSubstreamTimeout(), protocol, config.getQuorum());
         if (host != null) lookup.setHost(host);
         return runGetValueLookup(lookup);
     }

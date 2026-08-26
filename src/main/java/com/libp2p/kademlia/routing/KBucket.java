@@ -67,6 +67,23 @@ public class KBucket {
         return Optional.empty();
     }
 
+    public synchronized boolean promoteReplacement(PeerId evicted) {
+        for (int i = 0; i < entries.size(); i++) {
+            if (entries.get(i).peerId.equals(evicted)) {
+                entries.remove(i);
+                if (!replacementCache.isEmpty()) {
+                    entries.add(replacementCache.remove(0));
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public synchronized List<KBucketEntry> getReplacementCache() {
+        return List.copyOf(replacementCache);
+    }
+
     public synchronized void markSeen(PeerId peerId, Instant now) {
         for (int i = 0; i < entries.size(); i++) {
             if (entries.get(i).peerId.equals(peerId)) {

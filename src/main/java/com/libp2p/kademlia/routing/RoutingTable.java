@@ -74,6 +74,18 @@ public class RoutingTable {
         return removed;
     }
 
+    public boolean promoteReplacement(PeerId evicted) {
+        byte[] remoteKey = com.libp2p.kademlia.XorId.fromPeerId(evicted);
+        int bucketIdx = com.libp2p.kademlia.XorId.bucketIndex(localKey, remoteKey);
+        boolean promoted = buckets[bucketIdx].promoteReplacement(evicted);
+        if (promoted) {
+            allPeers.remove(evicted);
+            List<KBucketEntry> entries = buckets[bucketIdx].getEntries();
+            if (!entries.isEmpty()) allPeers.add(entries.get(0).peerId);
+        }
+        return promoted;
+    }
+
     public void markSeen(PeerId peerId) {
         int bucketIdx = com.libp2p.kademlia.XorId.bucketIndex(localKey, com.libp2p.kademlia.XorId.fromPeerId(peerId));
         buckets[bucketIdx].markSeen(peerId, Instant.now());

@@ -66,35 +66,54 @@ public class RoutingTableRefresh {
             Set<PeerId> queried = ConcurrentHashMap.newKeySet();
             List<KadPeer> candidates = new ArrayList<>(active);
             int noProgress = 0;
+            int concurrency = 3;
+            ExecutorService exec = Executors.newFixedThreadPool(concurrency, r -> {
+                Thread t = new Thread(r, "rt-refresh-fan");
+                t.setDaemon(true);
+                return t;
+            });
 
-            while (noProgress < 3) {
-                List<KadPeer> toQuery = new ArrayList<>();
-                for (KadPeer p : candidates) {
-                    if (!queried.contains(p.nodeId) && toQuery.size() < 3) {
-                        toQuery.add(p);
-                        queried.add(p.nodeId);
+            try {
+                while (noProgress < 3) {
+                    List<KadPeer> toQuery = new ArrayList<>();
+                    for (KadPeer p : candidates) {
+                        if (!queried.contains(p.nodeId) && toQuery.size() < concurrency) {
+                            toQuery.add(p);
+                            queried.add(p.nodeId);
+                        }
                     }
-                }
-                if (toQuery.isEmpty()) break;
+                    if (toQuery.isEmpty()) break;
 
-                boolean progress = false;
-                for (KadPeer peer : toQuery) {
-                    try {
-                        var result = protocol.sendFindNode(target, peer.nodeId).get(
-                                peerTimeout.toSeconds(), TimeUnit.SECONDS);
-                        routingTable.markSeen(peer.nodeId);
-                        for (KadPeer closer : result.closerPeers()) {
+                    List<CompletableFuture<List<KadPeer>>> futures = new ArrayList<>();
+                    for (KadPeer peer : toQuery) {
+                        futures.add(CompletableFuture.supplyAsync(() -> {
+                            try {
+                                var result = protocol.sendFindNode(target, peer.nodeId).get(
+                                        peerTimeout.toSeconds(), TimeUnit.SECONDS);
+                                routingTable.markSeen(peer.nodeId);
+                                return result.closerPeers();
+                            } catch (Exception e) {
+                                routingTable.remove(peer.nodeId);
+                                return List.<KadPeer>of();
+                            }
+                        }, exec));
+                    }
+
+                    boolean progress = false;
+                    CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).join();
+                    for (CompletableFuture<List<KadPeer>> f : futures) {
+                        for (KadPeer closer : f.join()) {
                             if (!queried.contains(closer.nodeId)) {
                                 candidates.add(closer);
                                 routingTable.insert(closer.nodeId, closer.multiaddrs);
                                 progress = true;
                             }
                         }
-                    } catch (Exception e) {
-                        routingTable.remove(peer.nodeId);
                     }
+                    noProgress = progress ? 0 : noProgress + 1;
                 }
-                noProgress = progress ? 0 : noProgress + 1;
+            } finally {
+                exec.shutdownNow();
             }
         } catch (Exception ignored) {}
     }

@@ -8,7 +8,9 @@ import io.libp2p.core.PeerId;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.*;
 
 public class IterativeLookup {
@@ -24,16 +26,25 @@ public class IterativeLookup {
     private volatile io.libp2p.core.Host host;
     private volatile com.libp2p.kademlia.records.Record bestRecord;
     private final List<com.libp2p.kademlia.records.ProviderRecord> collectedProviders = new ArrayList<>();
+    private final Map<PeerId, com.libp2p.kademlia.records.Record> peerRecords = new HashMap<>();
+    private int recordsReceived = 0;
+    private int quorum = 0;
 
     public IterativeLookup(byte[] target, List<KadPeer> seedPeers, int k, int alpha, int beta,
-                           Duration peerTimeout, KademliaProtocol protocol) {
+                           Duration peerTimeout, KademliaProtocol protocol, int quorum) {
         this.target = target;
         this.k = k;
         this.alpha = alpha;
         this.beta = beta;
         this.peerTimeout = peerTimeout;
         this.protocol = protocol;
+        this.quorum = quorum;
         for (KadPeer p : seedPeers) addHeard(p.nodeId, p.multiaddrs);
+    }
+
+    public IterativeLookup(byte[] target, List<KadPeer> seedPeers, int k, int alpha, int beta,
+                           Duration peerTimeout, KademliaProtocol protocol) {
+        this(target, seedPeers, k, alpha, beta, peerTimeout, protocol, 0);
     }
 
     public PeerId next() {
@@ -95,8 +106,17 @@ public class IterativeLookup {
             }
             checkTermination();
             Record newRecord = resp.record().orElse(null);
-            if (newRecord != null && (bestRecord == null || (newRecord.getTimeReceived() != null && (bestRecord.getTimeReceived() == null || newRecord.getTimeReceived().isAfter(bestRecord.getTimeReceived()))))) {
-                bestRecord = newRecord;
+            if (newRecord != null) {
+                peerRecords.put(next, newRecord);
+                recordsReceived++;
+                if (newRecord.getTimeReceived() != null && (bestRecord == null || bestRecord.getTimeReceived() == null || newRecord.getTimeReceived().isAfter(bestRecord.getTimeReceived()))) {
+                    bestRecord = newRecord;
+                }
+            }
+            if (quorum > 0 && recordsReceived >= quorum) {
+                state = LookupState.FINISHED;
+            } else {
+                checkTermination();
             }
             return new GetValueResult(newRecord, resp.closerPeers(), List.of(next));
         } catch (Exception e) {
@@ -244,6 +264,7 @@ public class IterativeLookup {
     public byte[] getTarget() { return target; }
     public com.libp2p.kademlia.records.Record getRecord() { return bestRecord; }
     public List<com.libp2p.kademlia.records.ProviderRecord> getProviders() { return collectedProviders; }
+    public Map<PeerId, com.libp2p.kademlia.records.Record> getPeerRecords() { return Map.copyOf(peerRecords); }
 
     public enum PeerStateInner { NOT_CONTACTED, WAITING, UNRESPONSIVE, FAILED, SUCCEEDED }
 

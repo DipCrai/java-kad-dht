@@ -29,6 +29,7 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
     private volatile RecordStore recordStore;
     private volatile ProviderStore providerStore;
     private volatile com.libp2p.kademlia.records.RecordValidator validator = com.libp2p.kademlia.records.RecordValidator.NOOP;
+    private volatile boolean serverMode = true;
 
     public KademliaProtocol(String protocolName, int kValue, Duration substreamTimeout, Duration providerRecordTTL) {
         this.protocolName = protocolName;
@@ -44,6 +45,10 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
     public CompletableFuture<KademliaController> initChannel(P2PChannel ch, String selectedProtocol) {
         Stream stream = (Stream) ch;
         if (!stream.isInitiator()) {
+            if (!serverMode) {
+                stream.close();
+                return CompletableFuture.failedFuture(new IllegalStateException("Client mode: not accepting inbound streams"));
+            }
             ResponderHandler handler = new ResponderHandler(this, stream);
             stream.pushHandler(new KademliaCodec());
             stream.pushHandler(handler);
@@ -61,6 +66,8 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
     public void setRecordStore(RecordStore store) { this.recordStore = store; }
     public void setProviderStore(ProviderStore store) { this.providerStore = store; }
     public void setValidator(com.libp2p.kademlia.records.RecordValidator v) { this.validator = v; }
+    public void setServerMode(boolean serverMode) { this.serverMode = serverMode; }
+    public boolean isServerMode() { return serverMode; }
 
     public CompletableFuture<Dht.Message> sendMessage(PeerId peer, Dht.Message msg) {
         return CompletableFuture.supplyAsync(() -> {
