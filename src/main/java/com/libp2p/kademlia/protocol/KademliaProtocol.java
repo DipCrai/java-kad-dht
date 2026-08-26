@@ -17,6 +17,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.KademliaController> {
 
@@ -25,6 +26,7 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
     private final Duration substreamTimeout;
     private final Duration providerRecordTTL;
     private final Duration providerAddrTTL;
+    private final Semaphore inboundSemaphore;
     private volatile RoutingTable routingTable;
     private volatile Host host;
     private volatile RecordStore recordStore;
@@ -32,12 +34,13 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
     private volatile com.libp2p.kademlia.records.RecordValidator validator = com.libp2p.kademlia.records.RecordValidator.NOOP;
     private volatile boolean serverMode = true;
 
-    public KademliaProtocol(String protocolName, int kValue, Duration substreamTimeout, Duration providerRecordTTL, Duration providerAddrTTL) {
+    public KademliaProtocol(String protocolName, int kValue, Duration substreamTimeout, Duration providerRecordTTL, Duration providerAddrTTL, int maxInboundRequests) {
         this.protocolName = protocolName;
         this.kValue = kValue;
         this.substreamTimeout = substreamTimeout;
         this.providerRecordTTL = providerRecordTTL;
         this.providerAddrTTL = providerAddrTTL;
+        this.inboundSemaphore = new Semaphore(maxInboundRequests);
     }
 
     @Override
@@ -93,8 +96,11 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
     }
 
     public CompletableFuture<Boolean> sendPutValue(Record record, PeerId peer) {
-        return sendMessage(peer, RpcCodec.putValue(record)).thenApply(msg ->
-                msg.hasRecord() && Arrays.equals(msg.getRecord().getKey().toByteArray(), record.getKey()));
+        com.libp2p.kademlia.records.WireRecord wireRec = com.libp2p.kademlia.records.WireRecord.fromRecord(record);
+        return sendMessage(peer, RpcCodec.putValue(wireRec)).thenApply(msg ->
+                msg.getType() == Dht.Message.MessageType.PUT_VALUE
+                        && msg.hasRecord()
+                        && Arrays.equals(msg.getRecord().getKey().toByteArray(), record.getKey()));
     }
 
     public CompletableFuture<Boolean> pingLiveness(PeerId peer, Duration timeout) {
@@ -110,7 +116,10 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
     }
 
     public CompletableFuture<Boolean> sendAddProvider(byte[] key, PeerId peer) {
-        return sendMessage(peer, RpcCodec.addProvider(key, host.getPeerId().getBytes())).thenApply(msg -> true);
+        List<Multiaddr> addrs = List.of();
+        try { addrs = new ArrayList<>(host.getAddressBook().getAddrs(host.getPeerId()).get(2, TimeUnit.SECONDS)); }
+        catch (Exception ignored) {}
+        return sendMessage(peer, RpcCodec.addProvider(key, host.getPeerId().getBytes(), addrs)).thenApply(msg -> true);
     }
 
     public CompletableFuture<GetProvidersResponse> sendGetProviders(byte[] key, PeerId peer) {
@@ -133,9 +142,10 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
         if (recordStore != null) {
             Record record = recordStore.get(key);
             if (record != null) {
+                com.libp2p.kademlia.records.WireRecord wireRec = com.libp2p.kademlia.records.WireRecord.fromRecord(record);
                 Dht.Record.Builder rb = Dht.Record.newBuilder()
-                        .setKey(ByteString.copyFrom(record.getKey()))
-                        .setValue(ByteString.copyFrom(record.getValue()));
+                        .setKey(ByteString.copyFrom(wireRec.getKey()))
+                        .setValue(ByteString.copyFrom(wireRec.getValue()));
                 if (record.getPublisher() != null) rb.setPublisher(ByteString.copyFrom(record.getPublisher()));
                 if (record.getTimeReceived() != null) rb.setTimeReceived(record.getTimeReceived().toString());
                 builder.setRecord(rb.build());
@@ -149,7 +159,10 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
         if (!req.hasRecord()) return Dht.Message.newBuilder().setType(Dht.Message.MessageType.PUT_VALUE).build();
         Dht.Record pbRec = req.getRecord();
         if (pbRec.getKey().isEmpty()) return Dht.Message.newBuilder().setType(Dht.Message.MessageType.PUT_VALUE).build();
-        byte[] key = pbRec.getKey().toByteArray();
+        byte[] msgKey = req.getKey().toByteArray();
+        byte[] recKey = pbRec.getKey().toByteArray();
+        if (!Arrays.equals(msgKey, recKey)) return Dht.Message.newBuilder().setType(Dht.Message.MessageType.PUT_VALUE).build();
+        byte[] key = recKey;
         byte[] value = pbRec.getValue().toByteArray();
         if (recordStore != null && value.length > 0) {
             if (!validator.validate(key, value)) return Dht.Message.newBuilder().setType(Dht.Message.MessageType.PUT_VALUE).build();
@@ -249,8 +262,9 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
                 if (!pbRec.getKey().isEmpty() && !pbRec.getValue().isEmpty()) {
                     byte[] publisher = pbRec.hasPublisher() ? pbRec.getPublisher().toByteArray() : null;
                     Instant expires = pbRec.hasTtl() && pbRec.getTtl() > 0 ? Instant.now().plusSeconds(pbRec.getTtl()) : null;
-                    Record record = new Record(pbRec.getKey().toByteArray(), pbRec.getValue().toByteArray(), publisher, expires);
-                    if (store != null) store.put(record);
+                    com.libp2p.kademlia.records.WireRecord wireRec = new com.libp2p.kademlia.records.WireRecord(
+                            pbRec.getKey().toByteArray(), pbRec.getValue().toByteArray());
+                    Record record = new Record(wireRec.getKey(), wireRec.getValue(), publisher, expires);
                     rec = Optional.of(record);
                 }
             }
@@ -359,16 +373,23 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
         @Override
         public void channelRead(io.netty.channel.ChannelHandlerContext ctx, Object msg) {
             if (msg instanceof Dht.Message dhtMsg) {
-                Dht.Message response = switch (dhtMsg.getType()) {
-                    case PING -> proto.handlePing();
-                    case FIND_NODE -> proto.handleFindNode(dhtMsg, stream.remotePeerId());
-                    case GET_VALUE -> proto.handleGetValue(dhtMsg, stream.remotePeerId());
-                    case PUT_VALUE -> proto.handlePutValue(dhtMsg, stream.remotePeerId());
-                    case ADD_PROVIDER -> proto.handleAddProvider(dhtMsg, stream.remotePeerId());
-                    case GET_PROVIDERS -> proto.handleGetProviders(dhtMsg, stream.remotePeerId());
-                    default -> null;
-                };
-                if (response != null) stream.writeAndFlush(response);
+                if (!proto.inboundSemaphore.tryAcquire()) {
+                    return;
+                }
+                try {
+                    Dht.Message response = switch (dhtMsg.getType()) {
+                        case PING -> proto.handlePing();
+                        case FIND_NODE -> proto.handleFindNode(dhtMsg, stream.remotePeerId());
+                        case GET_VALUE -> proto.handleGetValue(dhtMsg, stream.remotePeerId());
+                        case PUT_VALUE -> proto.handlePutValue(dhtMsg, stream.remotePeerId());
+                        case ADD_PROVIDER -> proto.handleAddProvider(dhtMsg, stream.remotePeerId());
+                        case GET_PROVIDERS -> proto.handleGetProviders(dhtMsg, stream.remotePeerId());
+                        default -> null;
+                    };
+                    if (response != null) stream.writeAndFlush(response);
+                } finally {
+                    proto.inboundSemaphore.release();
+                }
             } else ctx.fireChannelRead(msg);
         }
 

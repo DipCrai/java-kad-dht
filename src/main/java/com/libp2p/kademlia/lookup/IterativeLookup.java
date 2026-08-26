@@ -30,6 +30,9 @@ public class IterativeLookup {
     private int recordsReceived = 0;
     private int quorum = 0;
     private final CompletableFuture<Void> cancellation = new CompletableFuture<>();
+    private final ConcurrentLinkedQueue<PeerId> newlyHeardPeers = new ConcurrentLinkedQueue<>();
+    private volatile com.libp2p.kademlia.integration.IdentifyAdapter identifyAdapter;
+    private volatile com.libp2p.kademlia.routing.RoutingTable lookupRoutingTable;
 
     public IterativeLookup(byte[] target, List<KadPeer> seedPeers, int k, int alpha, int beta,
                            Duration peerTimeout, KademliaProtocol protocol, int quorum) {
@@ -52,19 +55,19 @@ public class IterativeLookup {
         int capacity = state == LookupState.STALLED ? Math.max(alpha, k) : alpha;
         int waiting = 0;
         for (PeerEntry pe : peers) {
-            if (pe.state == PeerStateInner.WAITING) {
-                if (pe.waitSince != null && Instant.now().isAfter(pe.waitSince.plus(peerTimeout))) {
-                    pe.state = PeerStateInner.UNRESPONSIVE;
+            if (pe.getState() == PeerStateInner.WAITING) {
+                if (pe.getWaitSince() != null && Instant.now().isAfter(pe.getWaitSince().plus(peerTimeout))) {
+                    pe.setState(PeerStateInner.UNRESPONSIVE);
                 } else waiting++;
             }
         }
         if (checkTermination()) return null;
         if (waiting < capacity) {
             for (PeerEntry pe : peers) {
-                if (pe.state == PeerStateInner.NOT_CONTACTED) {
-                    pe.state = PeerStateInner.WAITING;
-                    pe.waitSince = Instant.now();
-                    return pe.peerId;
+                if (pe.getState() == PeerStateInner.NOT_CONTACTED) {
+                    pe.setState(PeerStateInner.WAITING);
+                    pe.setWaitSince(Instant.now());
+                    return pe.getPeerId();
                 }
             }
         }
@@ -78,7 +81,7 @@ public class IterativeLookup {
                 .thenApply(resp -> {
                     markSucceeded(next);
                     PeerEntry nextEntry = find(next);
-                    updateRoutingTable(next, nextEntry != null ? nextEntry.addresses : List.of());
+                    updateRoutingTable(next, nextEntry != null ? nextEntry.getAddresses() : List.of());
                     for (KadPeer p : resp.closerPeers()) {
                         if (!contains(p.nodeId)) { addHeard(p.nodeId, p.multiaddrs); }
                         updateRoutingTable(p.nodeId, p.multiaddrs);
@@ -95,22 +98,20 @@ public class IterativeLookup {
                 });
     }
 
-    public GetValueResult queryNextGetValue() {
-        PeerId next = next();
-        if (next == null) return new GetValueResult(null, List.of(), List.of());
+    public GetValueResult queryGetValue(PeerId peer) {
+        if (peer == null) return new GetValueResult(null, List.of(), List.of());
         try {
-            var resp = protocol.sendGetValue(target, next).get(peerTimeout.toSeconds(), TimeUnit.SECONDS);
-            markSucceeded(next);
-            PeerEntry nextEntry = find(next);
-            updateRoutingTable(next, nextEntry != null ? nextEntry.addresses : List.of());
+            var resp = protocol.sendGetValue(target, peer).get(peerTimeout.toSeconds(), TimeUnit.SECONDS);
+            markSucceeded(peer);
+            PeerEntry nextEntry = find(peer);
+            updateRoutingTable(peer, nextEntry != null ? nextEntry.getAddresses() : List.of());
             for (KadPeer p : resp.closerPeers()) {
                 if (!contains(p.nodeId)) addHeard(p.nodeId, p.multiaddrs);
                 updateRoutingTable(p.nodeId, p.multiaddrs);
             }
-            checkTermination();
             Record newRecord = resp.record().orElse(null);
             if (newRecord != null) {
-                peerRecords.put(next, newRecord);
+                peerRecords.put(peer, newRecord);
                 recordsReceived++;
                 candidateRecords.add(newRecord);
             }
@@ -120,37 +121,35 @@ public class IterativeLookup {
             } else {
                 checkTermination();
             }
-            return new GetValueResult(newRecord, resp.closerPeers(), List.of(next));
+            return new GetValueResult(newRecord, resp.closerPeers(), List.of(peer));
         } catch (Exception e) {
-            markFailed(next);
+            markFailed(peer);
             noProgressCount++;
             if (noProgressCount >= alpha && state == LookupState.ITERATING) state = LookupState.STALLED;
             checkTermination();
-            return new GetValueResult(null, List.of(), List.of(next));
+            return new GetValueResult(null, List.of(), List.of(peer));
         }
     }
 
-    public GetProvidersResult queryNextGetProviders() {
-        PeerId next = next();
-        if (next == null) return new GetProvidersResult(List.of(), List.of(), List.of());
+    public GetProvidersResult queryGetProviders(PeerId peer) {
+        if (peer == null) return new GetProvidersResult(List.of(), List.of(), List.of());
         try {
-            var resp = protocol.sendGetProviders(target, next).get(peerTimeout.toSeconds(), TimeUnit.SECONDS);
-            markSucceeded(next);
-            PeerEntry nextEntry = find(next);
-            updateRoutingTable(next, nextEntry != null ? nextEntry.addresses : List.of());
+            var resp = protocol.sendGetProviders(target, peer).get(peerTimeout.toSeconds(), TimeUnit.SECONDS);
+            markSucceeded(peer);
+            PeerEntry nextEntry = find(peer);
+            updateRoutingTable(peer, nextEntry != null ? nextEntry.getAddresses() : List.of());
             for (KadPeer p : resp.closerPeers()) {
                 if (!contains(p.nodeId)) addHeard(p.nodeId, p.multiaddrs);
                 updateRoutingTable(p.nodeId, p.multiaddrs);
             }
-            checkTermination();
             collectedProviders.addAll(resp.providers());
-            return new GetProvidersResult(resp.providers(), resp.closerPeers(), List.of(next));
+            return new GetProvidersResult(resp.providers(), resp.closerPeers(), List.of(peer));
         } catch (Exception e) {
-            markFailed(next);
+            markFailed(peer);
             noProgressCount++;
             if (noProgressCount >= alpha && state == LookupState.ITERATING) state = LookupState.STALLED;
             checkTermination();
-            return new GetProvidersResult(List.of(), List.of(), List.of(next));
+            return new GetProvidersResult(List.of(), List.of(), List.of(peer));
         }
     }
 
@@ -160,6 +159,12 @@ public class IterativeLookup {
                 host.getAddressBook().addAddrs(peerId, 1800, addrs.toArray(io.libp2p.core.multiformats.Multiaddr[]::new));
             } catch (Exception ignored) {}
         }
+        if (lookupRoutingTable != null) {
+            Boolean kadSupport = identifyAdapter != null ? identifyAdapter.getKadServerSupport(peerId) : null;
+            if (kadSupport == null || kadSupport) {
+                lookupRoutingTable.insert(peerId, addrs != null ? addrs : List.of());
+            }
+        }
     }
 
     public void setHost(io.libp2p.core.Host host) { this.host = host; }
@@ -167,7 +172,7 @@ public class IterativeLookup {
     public void onResponse(PeerId peer, List<KadPeer> closerPeers) {
         markSucceeded(peer);
         PeerEntry peerEntry = find(peer);
-        updateRoutingTable(peer, peerEntry != null ? peerEntry.addresses : List.of());
+        updateRoutingTable(peer, peerEntry != null ? peerEntry.getAddresses() : List.of());
         boolean madeProgress = false;
         if (closerPeers != null) {
             for (KadPeer p : closerPeers) {
@@ -192,7 +197,7 @@ public class IterativeLookup {
         if (closestActive.size() >= beta) {
             boolean allOk = true;
             for (PeerEntry pe : closestActive) {
-                if (pe.state != PeerStateInner.SUCCEEDED) { allOk = false; break; }
+                if (pe.getState() != PeerStateInner.SUCCEEDED) { allOk = false; break; }
             }
             if (allOk) { state = LookupState.FINISHED; cancellation.complete(null); return true; }
         }
@@ -203,32 +208,33 @@ public class IterativeLookup {
     private void addHeard(PeerId id, List<io.libp2p.core.multiformats.Multiaddr> addrs) {
         if (contains(id)) return;
         peers.add(new PeerEntry(id, addrs));
+        newlyHeardPeers.add(id);
         sortByDistance();
     }
 
-    private boolean contains(PeerId id) { return peers.stream().anyMatch(p -> p.peerId.equals(id)); }
+    private boolean contains(PeerId id) { return peers.stream().anyMatch(p -> p.getPeerId().equals(id)); }
 
     private void markSucceeded(PeerId id) {
         PeerEntry e = find(id);
-        if (e != null) { e.state = PeerStateInner.SUCCEEDED; e.waitSince = null; }
+        if (e != null) { e.setState(PeerStateInner.SUCCEEDED); e.setWaitSince(null); }
     }
 
     private void markFailed(PeerId id) {
         PeerEntry e = find(id);
-        if (e != null) { e.state = PeerStateInner.FAILED; e.waitSince = null; }
+        if (e != null) { e.setState(PeerStateInner.FAILED); e.setWaitSince(null); }
     }
 
-    private int numHeard() { return (int) peers.stream().filter(p -> p.state == PeerStateInner.NOT_CONTACTED).count(); }
-    private int numWaiting() { return (int) peers.stream().filter(p -> p.state == PeerStateInner.WAITING).count(); }
+    private int numHeard() { return (int) peers.stream().filter(p -> p.getState() == PeerStateInner.NOT_CONTACTED).count(); }
+    private int numWaiting() { return (int) peers.stream().filter(p -> p.getState() == PeerStateInner.WAITING).count(); }
 
     private List<PeerEntry> getClosestActive(int n) {
         List<PeerEntry> active = new ArrayList<>();
         for (PeerEntry pe : peers) {
-            if (pe.state != PeerStateInner.FAILED && pe.state != PeerStateInner.UNRESPONSIVE) active.add(pe);
+            if (pe.getState() != PeerStateInner.FAILED && pe.getState() != PeerStateInner.UNRESPONSIVE) active.add(pe);
         }
         active.sort((a, b) -> {
-            byte[] dA = com.libp2p.kademlia.XorId.xor(target, com.libp2p.kademlia.XorId.fromPeerId(a.peerId));
-            byte[] dB = com.libp2p.kademlia.XorId.xor(target, com.libp2p.kademlia.XorId.fromPeerId(b.peerId));
+            byte[] dA = com.libp2p.kademlia.XorId.xor(target, com.libp2p.kademlia.XorId.fromPeerId(a.getPeerId()));
+            byte[] dB = com.libp2p.kademlia.XorId.xor(target, com.libp2p.kademlia.XorId.fromPeerId(b.getPeerId()));
             return com.libp2p.kademlia.XorId.compareDistance(dA, dB);
         });
         return active.size() > n ? active.subList(0, n) : active;
@@ -237,8 +243,10 @@ public class IterativeLookup {
     public List<KadPeer> getClosestPeers() {
         List<KadPeer> result = new ArrayList<>();
         for (PeerEntry pe : peers) {
-            if (pe.state == PeerStateInner.SUCCEEDED)
-                result.add(new KadPeer(pe.peerId, pe.addresses, KadPeer.ConnectionType.CONNECTED));
+            if (pe.getState() == PeerStateInner.SUCCEEDED) {
+                KadPeer.ConnectionType connType = resolveConnectionType(pe.getPeerId());
+                result.add(new KadPeer(pe.getPeerId(), pe.getAddresses(), connType));
+            }
         }
         result.sort((a, b) -> {
             byte[] dA = com.libp2p.kademlia.XorId.xor(target, com.libp2p.kademlia.XorId.fromPeerId(a.nodeId));
@@ -250,35 +258,42 @@ public class IterativeLookup {
 
     public List<KadPeer> getQueriedPeers() {
         return peers.stream()
-                .filter(pe -> pe.state == PeerStateInner.SUCCEEDED)
-                .map(pe -> new KadPeer(pe.peerId, pe.addresses, KadPeer.ConnectionType.CONNECTED))
+                .filter(pe -> pe.getState() == PeerStateInner.SUCCEEDED)
+                .map(pe -> new KadPeer(pe.getPeerId(), pe.getAddresses(), resolveConnectionType(pe.getPeerId())))
                 .toList();
+    }
+
+    private KadPeer.ConnectionType resolveConnectionType(PeerId peerId) {
+        if (host != null) {
+            try {
+                for (io.libp2p.core.Connection conn : host.getNetwork().getConnections()) {
+                    if (conn.secureSession().getRemoteId().equals(peerId)) {
+                        return KadPeer.ConnectionType.CONNECTED;
+                    }
+                }
+            } catch (Exception ignored) {}
+        }
+        return KadPeer.ConnectionType.NOT_CONNECTED;
     }
 
     private void sortByDistance() {
         peers.sort((a, b) -> {
-            byte[] dA = com.libp2p.kademlia.XorId.xor(target, com.libp2p.kademlia.XorId.fromPeerId(a.peerId));
-            byte[] dB = com.libp2p.kademlia.XorId.xor(target, com.libp2p.kademlia.XorId.fromPeerId(b.peerId));
+            byte[] dA = com.libp2p.kademlia.XorId.xor(target, com.libp2p.kademlia.XorId.fromPeerId(a.getPeerId()));
+            byte[] dB = com.libp2p.kademlia.XorId.xor(target, com.libp2p.kademlia.XorId.fromPeerId(b.getPeerId()));
             return com.libp2p.kademlia.XorId.compareDistance(dA, dB);
         });
     }
 
-    private PeerEntry find(PeerId id) { for (PeerEntry pe : peers) if (pe.peerId.equals(id)) return pe; return null; }
+    private PeerEntry find(PeerId id) { for (PeerEntry pe : peers) if (pe.getPeerId().equals(id)) return pe; return null; }
 
     public List<PeerEntry> getAllPeerEntries() { return List.copyOf(peers); }
 
     public LookupState getState() { return state; }
     public boolean isFinished() { return state == LookupState.FINISHED; }
     public byte[] getTarget() { return target; }
-    public com.libp2p.kademlia.records.Record getRecord() { return candidateRecords.isEmpty() ? null : candidateRecords.get(0); }
     public List<com.libp2p.kademlia.records.Record> getCandidateRecords() { return List.copyOf(candidateRecords); }
     public List<com.libp2p.kademlia.records.ProviderRecord> getProviders() { return collectedProviders; }
     public Map<PeerId, com.libp2p.kademlia.records.Record> getPeerRecords() { return Map.copyOf(peerRecords); }
-
-    public void setBestRecord(com.libp2p.kademlia.records.Record record) {
-        candidateRecords.clear();
-        if (record != null) candidateRecords.add(record);
-    }
 
     public void setPeerRecords(Map<PeerId, com.libp2p.kademlia.records.Record> records) {
         peerRecords.clear();
@@ -291,6 +306,16 @@ public class IterativeLookup {
     public int getAlpha() { return alpha; }
     public int getK() { return k; }
     public CompletableFuture<Void> getCancellation() { return cancellation; }
+
+    public List<PeerId> drainNewlyHeard() {
+        List<PeerId> result = new ArrayList<>();
+        PeerId p;
+        while ((p = newlyHeardPeers.poll()) != null) result.add(p);
+        return result;
+    }
+
+    public void setIdentifyAdapter(com.libp2p.kademlia.integration.IdentifyAdapter adapter) { this.identifyAdapter = adapter; }
+    public void setLookupRoutingTable(com.libp2p.kademlia.routing.RoutingTable rt) { this.lookupRoutingTable = rt; }
     public void addCandidateRecords(List<com.libp2p.kademlia.records.Record> records) { this.candidateRecords.addAll(records); }
 
     public enum PeerStateInner { NOT_CONTACTED, WAITING, UNRESPONSIVE, FAILED, SUCCEEDED }
@@ -300,15 +325,22 @@ public class IterativeLookup {
     public record GetProvidersResult(List<com.libp2p.kademlia.records.ProviderRecord> providers, List<KadPeer> closerPeers, List<PeerId> queried) {}
 
     public static class PeerEntry {
-        public final PeerId peerId;
-        public final List<io.libp2p.core.multiformats.Multiaddr> addresses;
-        public PeerStateInner state;
-        public Instant waitSince;
+        private final PeerId peerId;
+        private final List<io.libp2p.core.multiformats.Multiaddr> addresses;
+        private PeerStateInner state;
+        private Instant waitSince;
 
         public PeerEntry(PeerId peerId, List<io.libp2p.core.multiformats.Multiaddr> addresses) {
             this.peerId = peerId;
             this.addresses = addresses != null ? addresses : List.of();
             this.state = PeerStateInner.NOT_CONTACTED;
         }
+
+        public PeerId getPeerId() { return peerId; }
+        public List<io.libp2p.core.multiformats.Multiaddr> getAddresses() { return addresses; }
+        public PeerStateInner getState() { return state; }
+        public Instant getWaitSince() { return waitSince; }
+        public void setState(PeerStateInner state) { this.state = state; }
+        public void setWaitSince(Instant waitSince) { this.waitSince = waitSince; }
     }
 }

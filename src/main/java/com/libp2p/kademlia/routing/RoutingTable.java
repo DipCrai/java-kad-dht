@@ -87,6 +87,12 @@ public class RoutingTable {
         return promoted;
     }
 
+    public boolean discardPending(PeerId pendingPeerId) {
+        byte[] remoteKey = com.libp2p.kademlia.XorId.fromPeerId(pendingPeerId);
+        int bucketIdx = com.libp2p.kademlia.XorId.bucketIndex(localKey, remoteKey);
+        return buckets[bucketIdx].discardPending(pendingPeerId);
+    }
+
     public void markSeen(PeerId peerId) {
         int bucketIdx = com.libp2p.kademlia.XorId.bucketIndex(localKey, com.libp2p.kademlia.XorId.fromPeerId(peerId));
         buckets[bucketIdx].markSeen(peerId, Instant.now());

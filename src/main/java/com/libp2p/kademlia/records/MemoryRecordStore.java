@@ -104,6 +104,10 @@ public class MemoryRecordStore implements RecordStore {
     }
 
     private void evictOldest() {
+        if (records.size() <= 1) {
+            if (records.size() == 1) records.clear();
+            return;
+        }
         Record oldest = null;
         ByteKey oldestKey = null;
         for (Map.Entry<ByteKey, Record> e : records.entrySet()) {

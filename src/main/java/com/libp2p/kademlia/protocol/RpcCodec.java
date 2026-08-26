@@ -2,6 +2,7 @@ package com.libp2p.kademlia.protocol;
 
 import com.google.protobuf.ByteString;
 import com.libp2p.kademlia.pb.Dht;
+import com.libp2p.kademlia.records.WireRecord;
 
 public final class RpcCodec {
     private RpcCodec() {}
@@ -36,7 +37,7 @@ public final class RpcCodec {
                 .setKey(ByteString.copyFrom(key)).setClusterLevelRaw(10).build();
     }
 
-    public static Dht.Message putValue(com.libp2p.kademlia.records.Record record) {
+    public static Dht.Message putValue(WireRecord record) {
         Dht.Record pbRec = Dht.Record.newBuilder()
                 .setKey(ByteString.copyFrom(record.getKey()))
                 .setValue(ByteString.copyFrom(record.getValue()))
@@ -45,12 +46,17 @@ public final class RpcCodec {
                 .setRecord(pbRec).setClusterLevelRaw(10).build();
     }
 
-    public static Dht.Message addProvider(byte[] key, byte[] selfPeerId) {
-        Dht.Message.Peer selfPeer = Dht.Message.Peer.newBuilder()
+    public static Dht.Message addProvider(byte[] key, byte[] selfPeerId, java.util.List<io.libp2p.core.multiformats.Multiaddr> addrs) {
+        Dht.Message.Peer.Builder peerBuilder = Dht.Message.Peer.newBuilder()
                 .setId(ByteString.copyFrom(selfPeerId))
-                .setConnection(Dht.Message.ConnectionType.CONNECTED).build();
+                .setConnection(Dht.Message.ConnectionType.CONNECTED);
+        if (addrs != null) {
+            for (io.libp2p.core.multiformats.Multiaddr addr : addrs) {
+                peerBuilder.addAddrs(ByteString.copyFrom(addr.serialize()));
+            }
+        }
         return Dht.Message.newBuilder().setType(Dht.Message.MessageType.ADD_PROVIDER)
-                .setKey(ByteString.copyFrom(key)).addProviderPeers(selfPeer).setClusterLevelRaw(10).build();
+                .setKey(ByteString.copyFrom(key)).addProviderPeers(peerBuilder.build()).setClusterLevelRaw(10).build();
     }
 
     public static Dht.Message getProviders(byte[] key) {

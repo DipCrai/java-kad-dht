@@ -98,6 +98,16 @@ public class KBucket {
         return entries.isEmpty() ? Optional.empty() : Optional.of(entries.get(entries.size() - 1));
     }
 
+    public synchronized boolean discardPending(PeerId pendingPeerId) {
+        for (int i = 0; i < replacementCache.size(); i++) {
+            if (replacementCache.get(i).peerId.equals(pendingPeerId)) {
+                replacementCache.remove(i);
+                return true;
+            }
+        }
+        return false;
+    }
+
     public enum InsertResult {
         INSERTED, ALREADY_PRESENT, PING
     }

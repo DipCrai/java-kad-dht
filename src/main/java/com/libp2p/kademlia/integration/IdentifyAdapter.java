@@ -7,12 +7,16 @@ import io.libp2p.core.multiformats.Multiaddr;
 
 import java.util.Collection;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
 public class IdentifyAdapter {
     private final RoutingTable routingTable;
     private volatile Host host;
     private final String kadProtocol;
+    private final Set<PeerId> kadServers = ConcurrentHashMap.newKeySet();
+    private final Set<PeerId> nonKadServers = ConcurrentHashMap.newKeySet();
 
     public IdentifyAdapter(RoutingTable routingTable, Host host, String kadProtocol) {
         this.routingTable = routingTable;
@@ -22,11 +26,23 @@ public class IdentifyAdapter {
 
     public void setHost(Host host) { this.host = host; }
 
+    public Boolean getKadServerSupport(PeerId peer) {
+        if (kadServers.contains(peer)) return true;
+        if (nonKadServers.contains(peer)) return false;
+        return null;
+    }
+
     public void onPeerIdentified(PeerId peer, Collection<Multiaddr> addresses, List<String> protocols) {
         if (peer.equals(host.getPeerId())) return;
         boolean supportsKad = protocols != null && protocols.stream().anyMatch(p -> p.contains("/kad/"));
-        if (!supportsKad) return;
-        routingTable.insert(peer, addresses != null ? List.copyOf(addresses) : List.of());
+        if (supportsKad) {
+            kadServers.add(peer);
+            nonKadServers.remove(peer);
+            routingTable.insert(peer, addresses != null ? List.copyOf(addresses) : List.of());
+        } else {
+            nonKadServers.add(peer);
+            kadServers.remove(peer);
+        }
     }
 
     public void onAddressesUpdated(PeerId peer, Collection<Multiaddr> addresses) {

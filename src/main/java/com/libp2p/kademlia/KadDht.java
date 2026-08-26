@@ -64,7 +64,7 @@ public class KadDht {
                 config.getValidator() != null ? config.getValidator() : RecordValidator.NOOP);
         this.providerStore = providerStore != null ? providerStore : new MemoryProviderStore(config.getMaxProvidedKeys(), config.getMaxProvidersPerKey());
 
-        this.protocol = new KademliaProtocol(config.getProtocolName(), config.getKValue(), config.getSubstreamTimeout(), config.getProviderRecordTTL(), config.getProviderAddrTTL());
+        this.protocol = new KademliaProtocol(config.getProtocolName(), config.getKValue(), config.getSubstreamTimeout(), config.getProviderRecordTTL(), config.getProviderAddrTTL(), config.getMaxInboundRequests());
         this.protocol.setRoutingTable(routingTable);
         this.protocol.setRecordStore(this.recordStore);
         this.protocol.setProviderStore(this.providerStore);
@@ -89,6 +89,7 @@ public class KadDht {
         protocol.setHost(host);
         identifyAdapter.setHost(host);
         bootstrapManager.setHost(host);
+        bootstrapManager.setFindNodeFn(target -> iterativeLookup(target).thenApply(v -> null));
         rtRefresh.setHost(host);
     }
 
@@ -106,6 +107,7 @@ public class KadDht {
         if (host == null) throw new IllegalStateException("setHost() first");
         running = true;
         protocol.setServerMode(config.getMode().isServer());
+        QueryScheduler.setGlobalMaxConcurrent(config.getMaxConcurrentQueries());
         rtRefresh.start();
 
         gcTask = scheduler.scheduleWithFixedDelay(() -> {
@@ -180,7 +182,13 @@ public class KadDht {
 
                     List<CompletableFuture<Boolean>> futures = new ArrayList<>();
                     for (KadPeer p : closest) futures.add(protocol.sendPutValue(record, p.nodeId));
-                    return CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).thenApply(v -> true);
+                    return CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).thenApply(v -> {
+                        int successes = 0;
+                        for (CompletableFuture<Boolean> f : futures) {
+                            try { if (f.join()) successes++; } catch (Exception ignored) {}
+                        }
+                        return successes >= config.getWriteQuorum();
+                    });
                 });
     }
 
@@ -196,6 +204,11 @@ public class KadDht {
                         if (!collected.stream().anyMatch(r -> Arrays.equals(r.getKey(), key) && Arrays.equals(r.getValue(), local.getValue()))) {
                             collected.add(local);
                         }
+                    }
+
+                    RecordValidator validator = config.getValidator();
+                    if (validator != null) {
+                        collected.removeIf(r -> !validator.validate(r.getKey(), r.getValue()));
                     }
 
                     if (collected.isEmpty()) return CompletableFuture.completedFuture(null);
@@ -284,21 +297,18 @@ public class KadDht {
             IterativeLookup lookup = new IterativeLookup(target, seed, config.getKValue(),
                     config.getAlphaValue(), config.getBetaValue(), config.getSubstreamTimeout(), protocol);
             if (host != null) lookup.setHost(host);
+            lookup.setIdentifyAdapter(identifyAdapter);
+            lookup.setLookupRoutingTable(routingTable);
             return runIterativeLookup(lookup);
         }
         List<CompletableFuture<IterativeLookup>> paths = new ArrayList<>();
         for (int i = 0; i < disjointPaths; i++) {
-            List<KadPeer> seed = routingTable.findClosest(target, config.getKValue());
-            if (seed.isEmpty() && host != null) {
-                seed = getBootstrapSeeds(target);
-            }
-            if (seed.size() > 1 && i > 0) {
-                int skip = Math.min(i, seed.size() - 1);
-                java.util.Collections.rotate(seed, -skip);
-            }
+            List<KadPeer> seed = getDisjointSeedPeers(target, i, disjointPaths);
             IterativeLookup lookup = new IterativeLookup(target, seed, config.getKValue(),
                     config.getAlphaValue(), config.getBetaValue(), config.getSubstreamTimeout(), protocol);
             if (host != null) lookup.setHost(host);
+            lookup.setIdentifyAdapter(identifyAdapter);
+            lookup.setLookupRoutingTable(routingTable);
             paths.add(runIterativeLookup(lookup));
         }
         return CompletableFuture.allOf(paths.toArray(CompletableFuture[]::new))
@@ -341,23 +351,20 @@ public class KadDht {
                 seed = getBootstrapSeeds(target);
             }
             IterativeLookup lookup = new IterativeLookup(target, seed, config.getKValue(),
-                    config.getAlphaValue(), config.getBetaValue(), config.getSubstreamTimeout(), protocol, config.getQuorum());
+                    config.getAlphaValue(), config.getBetaValue(), config.getSubstreamTimeout(), protocol, config.getReadQuorum());
             if (host != null) lookup.setHost(host);
+            lookup.setIdentifyAdapter(identifyAdapter);
+            lookup.setLookupRoutingTable(routingTable);
             return runGetValueLookup(lookup);
         }
         List<CompletableFuture<IterativeLookup>> paths = new ArrayList<>();
         for (int i = 0; i < disjointPaths; i++) {
-            List<KadPeer> seed = routingTable.findClosest(target, config.getKValue());
-            if (seed.isEmpty() && host != null) {
-                seed = getBootstrapSeeds(target);
-            }
-            if (seed.size() > 1 && i > 0) {
-                int skip = Math.min(i, seed.size() - 1);
-                java.util.Collections.rotate(seed, -skip);
-            }
+            List<KadPeer> seed = getDisjointSeedPeers(target, i, disjointPaths);
             IterativeLookup lookup = new IterativeLookup(target, seed, config.getKValue(),
-                    config.getAlphaValue(), config.getBetaValue(), config.getSubstreamTimeout(), protocol, config.getQuorum());
+                    config.getAlphaValue(), config.getBetaValue(), config.getSubstreamTimeout(), protocol, config.getReadQuorum());
             if (host != null) lookup.setHost(host);
+            lookup.setIdentifyAdapter(identifyAdapter);
+            lookup.setLookupRoutingTable(routingTable);
             paths.add(runGetValueLookup(lookup));
         }
         return CompletableFuture.allOf(paths.toArray(CompletableFuture[]::new))
@@ -387,7 +394,7 @@ public class KadDht {
                         deduped = new ArrayList<>(deduped.subList(0, config.getKValue()));
                     }
                     IterativeLookup merged = new IterativeLookup(target, deduped, config.getKValue(),
-                            config.getAlphaValue(), config.getBetaValue(), config.getSubstreamTimeout(), protocol, config.getQuorum());
+                            config.getAlphaValue(), config.getBetaValue(), config.getSubstreamTimeout(), protocol, config.getReadQuorum());
                     if (host != null) merged.setHost(host);
                     merged.addCandidateRecords(allCandidateRecords);
                     merged.setPeerRecords(allPeerRecords);
@@ -405,21 +412,18 @@ public class KadDht {
             IterativeLookup lookup = new IterativeLookup(target, seed, config.getKValue(),
                     config.getAlphaValue(), config.getBetaValue(), config.getSubstreamTimeout(), protocol);
             if (host != null) lookup.setHost(host);
+            lookup.setIdentifyAdapter(identifyAdapter);
+            lookup.setLookupRoutingTable(routingTable);
             return runGetProvidersLookup(lookup);
         }
         List<CompletableFuture<IterativeLookup>> paths = new ArrayList<>();
         for (int i = 0; i < disjointPaths; i++) {
-            List<KadPeer> seed = routingTable.findClosest(target, config.getKValue());
-            if (seed.isEmpty() && host != null) {
-                seed = getBootstrapSeeds(target);
-            }
-            if (seed.size() > 1 && i > 0) {
-                int skip = Math.min(i, seed.size() - 1);
-                java.util.Collections.rotate(seed, -skip);
-            }
+            List<KadPeer> seed = getDisjointSeedPeers(target, i, disjointPaths);
             IterativeLookup lookup = new IterativeLookup(target, seed, config.getKValue(),
                     config.getAlphaValue(), config.getBetaValue(), config.getSubstreamTimeout(), protocol);
             if (host != null) lookup.setHost(host);
+            lookup.setIdentifyAdapter(identifyAdapter);
+            lookup.setLookupRoutingTable(routingTable);
             paths.add(runGetProvidersLookup(lookup));
         }
         return CompletableFuture.allOf(paths.toArray(CompletableFuture[]::new))
@@ -455,21 +459,25 @@ public class KadDht {
     }
 
     private CompletableFuture<IterativeLookup> runIterativeLookup(IterativeLookup lookup) {
+        java.util.concurrent.atomic.AtomicReference<QueryScheduler> qsRef = new java.util.concurrent.atomic.AtomicReference<>();
         QueryScheduler qs = new QueryScheduler(config.getAlphaValue(), lookup, next -> {
             return CompletableFuture.runAsync(() -> {
                 try {
                     var result = protocol.sendFindNode(lookup.getTarget(), next).get(
                             config.getSubstreamTimeout().toSeconds(), TimeUnit.SECONDS);
                     lookup.onResponse(next, result.closerPeers());
+                    QueryScheduler q = qsRef.get();
+                    if (q != null) q.submitPeers(lookup.drainNewlyHeard());
                 } catch (Exception e) {
                     lookup.onFailure(next);
                 }
             }, scheduler);
-        });
+        }, config.getQueryTimeout(), scheduler);
+        qsRef.set(qs);
         List<PeerId> initialPeers = new ArrayList<>();
         for (IterativeLookup.PeerEntry pe : lookup.getAllPeerEntries()) {
-            if (pe.state == IterativeLookup.PeerStateInner.NOT_CONTACTED) {
-                initialPeers.add(pe.peerId);
+            if (pe.getState() == IterativeLookup.PeerStateInner.NOT_CONTACTED) {
+                initialPeers.add(pe.getPeerId());
             }
         }
         qs.submitPeers(initialPeers);
@@ -480,16 +488,16 @@ public class KadDht {
         QueryScheduler qs = new QueryScheduler(config.getAlphaValue(), lookup, next -> {
             return CompletableFuture.runAsync(() -> {
                 try {
-                    lookup.queryNextGetValue();
+                    lookup.queryGetValue(next);
                 } catch (Exception e) {
                     lookup.onFailure(next);
                 }
             }, scheduler);
-        });
+        }, config.getQueryTimeout(), scheduler);
         List<PeerId> initialPeers = new ArrayList<>();
         for (IterativeLookup.PeerEntry pe : lookup.getAllPeerEntries()) {
-            if (pe.state == IterativeLookup.PeerStateInner.NOT_CONTACTED) {
-                initialPeers.add(pe.peerId);
+            if (pe.getState() == IterativeLookup.PeerStateInner.NOT_CONTACTED) {
+                initialPeers.add(pe.getPeerId());
             }
         }
         qs.submitPeers(initialPeers);
@@ -500,16 +508,16 @@ public class KadDht {
         QueryScheduler qs = new QueryScheduler(config.getAlphaValue(), lookup, next -> {
             return CompletableFuture.runAsync(() -> {
                 try {
-                    lookup.queryNextGetProviders();
+                    lookup.queryGetProviders(next);
                 } catch (Exception e) {
                     lookup.onFailure(next);
                 }
             }, scheduler);
-        });
+        }, config.getQueryTimeout(), scheduler);
         List<PeerId> initialPeers = new ArrayList<>();
         for (IterativeLookup.PeerEntry pe : lookup.getAllPeerEntries()) {
-            if (pe.state == IterativeLookup.PeerStateInner.NOT_CONTACTED) {
-                initialPeers.add(pe.peerId);
+            if (pe.getState() == IterativeLookup.PeerStateInner.NOT_CONTACTED) {
+                initialPeers.add(pe.getPeerId());
             }
         }
         qs.submitPeers(initialPeers);
@@ -527,6 +535,20 @@ public class KadDht {
             seeds.add(new KadPeer(peer, addrs, connType));
         }
         return seeds;
+    }
+
+    private List<KadPeer> getDisjointSeedPeers(byte[] target, int pathIndex, int totalPaths) {
+        int count = config.getKValue();
+        List<KadPeer> allKnown = getBootstrapSeeds(target);
+        if (allKnown.isEmpty()) return List.of();
+        if (totalPaths <= 1) return allKnown.size() > count ? new ArrayList<>(allKnown.subList(0, count)) : allKnown;
+        java.util.Collections.shuffle(allKnown, new java.util.Random(pathIndex * 31L + java.util.Arrays.hashCode(target)));
+        int start = pathIndex * count;
+        int end = Math.min(start + count, allKnown.size());
+        if (start >= allKnown.size()) {
+            return List.of(allKnown.get(pathIndex % allKnown.size()));
+        }
+        return new ArrayList<>(allKnown.subList(start, end));
     }
 
     public IdentifyAdapter getIdentifyAdapter() { return identifyAdapter; }

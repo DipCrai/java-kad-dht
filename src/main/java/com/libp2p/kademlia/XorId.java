@@ -76,21 +76,23 @@ public class XorId {
     }
 
     public static byte[] generateRandomKeyForBucket(byte[] selfKey, int bucketIndex) {
-        byte[] random = new byte[KEY_LENGTH];
-        new java.security.SecureRandom().nextBytes(random);
-        byte[] mask = new byte[KEY_LENGTH];
+        byte[] result = new byte[KEY_LENGTH];
+        System.arraycopy(selfKey, 0, result, 0, KEY_LENGTH);
+
         int byteIdx = bucketIndex / 8;
         int bitIdx = 7 - (bucketIndex % 8);
+
         if (byteIdx < KEY_LENGTH) {
-            mask[byteIdx] = (byte) (1 << bitIdx);
-            random[byteIdx] = (byte) ((random[byteIdx] & ~(1 << bitIdx)) | (1 << bitIdx));
+            result[byteIdx] = (byte) (result[byteIdx] ^ (1 << bitIdx));
+        }
+
+        java.security.SecureRandom sr = new java.security.SecureRandom();
+        int lowerBitsMask = (1 << bitIdx) - 1;
+        if (byteIdx < KEY_LENGTH && lowerBitsMask > 0) {
+            result[byteIdx] = (byte) ((result[byteIdx] & ~lowerBitsMask) | (sr.nextInt(256) & lowerBitsMask));
         }
         for (int i = byteIdx + 1; i < KEY_LENGTH; i++) {
-            random[i] = (byte) (random[i] & 0xFF);
-        }
-        byte[] result = new byte[KEY_LENGTH];
-        for (int i = 0; i < KEY_LENGTH; i++) {
-            result[i] = (byte) (selfKey[i] ^ (byte) (random[i] ^ selfKey[i]));
+            result[i] = (byte) sr.nextInt(256);
         }
         return result;
     }

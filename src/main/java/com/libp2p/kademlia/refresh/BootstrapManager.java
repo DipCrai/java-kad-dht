@@ -17,6 +17,7 @@ public class BootstrapManager {
     private final List<Multiaddr> bootstrapNodes;
     private final Duration connectTimeout;
     private volatile boolean bootstrapped = false;
+    private volatile java.util.function.Function<byte[], CompletableFuture<Void>> findNodeFn;
 
     public BootstrapManager(RoutingTable routingTable, Host host, List<Multiaddr> bootstrapNodes, Duration connectTimeout) {
         this.routingTable = routingTable;
@@ -26,6 +27,7 @@ public class BootstrapManager {
     }
 
     public void setHost(Host host) { this.host = host; }
+    public void setFindNodeFn(java.util.function.Function<byte[], CompletableFuture<Void>> fn) { this.findNodeFn = fn; }
 
     public CompletableFuture<Void> bootstrap() {
         if (bootstrapped) return CompletableFuture.completedFuture(null);
@@ -38,17 +40,23 @@ public class BootstrapManager {
 
     private CompletableFuture<Void> connectBootstrapNodes() {
         if (bootstrapNodes.isEmpty()) return CompletableFuture.completedFuture(null);
+        if (host == null) return CompletableFuture.completedFuture(null);
+        List<CompletableFuture<Void>> futures = new ArrayList<>();
         for (Multiaddr addr : bootstrapNodes) {
             try {
                 String addrStr = addr.toString();
                 String[] parts = addrStr.split("/p2p/");
                 if (parts.length > 1) {
                     PeerId peerId = PeerId.fromBase58(parts[1]);
-                    routingTable.markSeen(peerId);
+                    host.getAddressBook().addAddrs(peerId, 300_000, addr);
+                    futures.add(host.newStream(List.of("/ipfs/ping/1.0.0"), peerId)
+                            .getController()
+                            .thenAccept(ctrl -> routingTable.markSeen(peerId))
+                            .exceptionally(ex -> null));
                 }
             } catch (Exception ignored) {}
         }
-        return CompletableFuture.completedFuture(null);
+        return CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new));
     }
 
     private CompletableFuture<Void> selfLookup() {
@@ -71,6 +79,7 @@ public class BootstrapManager {
     }
 
     private CompletableFuture<Void> iterativeFindNode(byte[] target) {
+        if (findNodeFn != null) return findNodeFn.apply(target);
         return CompletableFuture.supplyAsync(() -> {
             List<KadPeer> active = getActivePeers();
             if (active.isEmpty()) return null;

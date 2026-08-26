@@ -31,7 +31,6 @@ public class KadConfig {
     private final int maxRecordValueSize;
     private final int maxConcurrentQueries;
     private final int maxInboundRequests;
-    private final int quorum;
     private final int replicationFactor;
     private final int writeQuorum;
     private final int readQuorum;
@@ -62,7 +61,6 @@ public class KadConfig {
         this.maxRecordValueSize = builder.maxRecordValueSize;
         this.maxConcurrentQueries = builder.maxConcurrentQueries;
         this.maxInboundRequests = builder.maxInboundRequests;
-        this.quorum = builder.quorum;
         this.replicationFactor = builder.replicationFactor;
         this.writeQuorum = builder.writeQuorum;
         this.readQuorum = builder.readQuorum;
@@ -93,7 +91,6 @@ public class KadConfig {
     public int getMaxRecordValueSize() { return maxRecordValueSize; }
     public int getMaxConcurrentQueries() { return maxConcurrentQueries; }
     public int getMaxInboundRequests() { return maxInboundRequests; }
-    public int getQuorum() { return quorum; }
     public int getReplicationFactor() { return replicationFactor; }
     public int getWriteQuorum() { return writeQuorum; }
     public int getReadQuorum() { return readQuorum; }
@@ -110,7 +107,7 @@ public class KadConfig {
 
         private String protocolName = "/ipfs/kad/1.0.0";
         private int kValue = 20;
-        private int alphaValue = 3;
+        private int alphaValue = 10;
         private int betaValue = 3;
         private Duration queryTimeout = Duration.ofSeconds(60);
         private Duration substreamTimeout = Duration.ofSeconds(10);
@@ -129,7 +126,6 @@ public class KadConfig {
         private int maxRecordValueSize = 65536;
         private int maxConcurrentQueries = 100;
         private int maxInboundRequests = 100;
-        private int quorum = 3;
         private int replicationFactor = 20;
         private int writeQuorum = 1;
         private int readQuorum = 1;
@@ -161,7 +157,6 @@ public class KadConfig {
         public Builder maxRecordValueSize(int maxRecordValueSize) { this.maxRecordValueSize = maxRecordValueSize; return this; }
         public Builder maxConcurrentQueries(int maxConcurrentQueries) { this.maxConcurrentQueries = maxConcurrentQueries; return this; }
         public Builder maxInboundRequests(int maxInboundRequests) { this.maxInboundRequests = maxInboundRequests; return this; }
-        public Builder quorum(int quorum) { this.quorum = quorum; return this; }
         public Builder replicationFactor(int replicationFactor) { this.replicationFactor = replicationFactor; return this; }
         public Builder writeQuorum(int writeQuorum) { this.writeQuorum = writeQuorum; return this; }
         public Builder readQuorum(int readQuorum) { this.readQuorum = readQuorum; return this; }
@@ -171,6 +166,27 @@ public class KadConfig {
         public Builder validator(RecordValidator validator) { this.validator = validator; return this; }
 
         public KadConfig build() {
+            if (kValue <= 0) throw new IllegalArgumentException("kValue must be > 0, got " + kValue);
+            if (alphaValue <= 0) throw new IllegalArgumentException("alphaValue must be > 0, got " + alphaValue);
+            if (alphaValue > kValue) throw new IllegalArgumentException("alphaValue must be <= kValue (" + kValue + "), got " + alphaValue);
+            if (betaValue < 0) throw new IllegalArgumentException("betaValue must be >= 0, got " + betaValue);
+            if (betaValue > kValue) throw new IllegalArgumentException("betaValue must be <= kValue (" + kValue + "), got " + betaValue);
+            if (replicationFactor <= 0) throw new IllegalArgumentException("replicationFactor must be > 0, got " + replicationFactor);
+            if (replicationFactor > kValue) throw new IllegalArgumentException("replicationFactor must be <= kValue (" + kValue + "), got " + replicationFactor);
+            if (writeQuorum <= 0) throw new IllegalArgumentException("writeQuorum must be > 0, got " + writeQuorum);
+            if (writeQuorum > replicationFactor) throw new IllegalArgumentException("writeQuorum must be <= replicationFactor (" + replicationFactor + "), got " + writeQuorum);
+            if (readQuorum <= 0) throw new IllegalArgumentException("readQuorum must be > 0, got " + readQuorum);
+            if (maxPacketSize <= 0) throw new IllegalArgumentException("maxPacketSize must be > 0, got " + maxPacketSize);
+            if (queryTimeout == null || queryTimeout.isNegative() || queryTimeout.isZero()) throw new IllegalArgumentException("queryTimeout must be positive");
+            if (substreamTimeout == null || substreamTimeout.isNegative() || substreamTimeout.isZero()) throw new IllegalArgumentException("substreamTimeout must be positive");
+            if (bootstrapInterval == null || bootstrapInterval.isNegative() || bootstrapInterval.isZero()) throw new IllegalArgumentException("bootstrapInterval must be positive");
+            if (pendingTimeout == null || pendingTimeout.isNegative() || pendingTimeout.isZero()) throw new IllegalArgumentException("pendingTimeout must be positive");
+            if (providerRecordTTL == null || providerRecordTTL.isNegative() || providerRecordTTL.isZero()) throw new IllegalArgumentException("providerRecordTTL must be positive");
+            if (providerAddrTTL == null || providerAddrTTL.isNegative() || providerAddrTTL.isZero()) throw new IllegalArgumentException("providerAddrTTL must be positive");
+            if (recordMaxAge == null || recordMaxAge.isNegative() || recordMaxAge.isZero()) throw new IllegalArgumentException("recordMaxAge must be positive");
+            if (recordReplicationInterval == null || recordReplicationInterval.isNegative() || recordReplicationInterval.isZero()) throw new IllegalArgumentException("recordReplicationInterval must be positive");
+            if (recordPublicationInterval == null || recordPublicationInterval.isNegative() || recordPublicationInterval.isZero()) throw new IllegalArgumentException("recordPublicationInterval must be positive");
+            if (providerPublicationInterval == null || providerPublicationInterval.isNegative() || providerPublicationInterval.isZero()) throw new IllegalArgumentException("providerPublicationInterval must be positive");
             return new KadConfig(this);
         }
     }
