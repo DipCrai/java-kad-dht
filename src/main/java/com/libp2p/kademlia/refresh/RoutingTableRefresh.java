@@ -1,5 +1,6 @@
 package com.libp2p.kademlia.refresh;
 
+import com.libp2p.kademlia.protocol.KademliaProtocol;
 import com.libp2p.kademlia.routing.RoutingTable;
 import com.libp2p.kademlia.routing.KadPeer;
 import com.libp2p.kademlia.XorId;
@@ -14,6 +15,7 @@ import java.util.concurrent.*;
 public class RoutingTableRefresh {
     private final RoutingTable routingTable;
     private volatile Host host;
+    private volatile KademliaProtocol protocol;
     private final Duration refreshInterval;
     private final Duration peerTimeout;
     private ScheduledExecutorService scheduler;
@@ -27,6 +29,7 @@ public class RoutingTableRefresh {
     }
 
     public void setHost(Host host) { this.host = host; }
+    public void setProtocol(KademliaProtocol protocol) { this.protocol = protocol; }
 
     public void start() {
         scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
@@ -44,7 +47,7 @@ public class RoutingTableRefresh {
 
     private void refresh() {
         try {
-            if (host == null) return;
+            if (host == null || protocol == null) return;
             byte[] selfKey = XorId.fromPeerId(host.getPeerId());
             List<Integer> buckets = routingTable.getNonEmptyBucketIndices();
             for (int idx : buckets) {
@@ -65,28 +68,30 @@ public class RoutingTableRefresh {
             int noProgress = 0;
 
             while (noProgress < 3) {
-                List<PeerId> toQuery = new ArrayList<>();
+                List<KadPeer> toQuery = new ArrayList<>();
                 for (KadPeer p : candidates) {
                     if (!queried.contains(p.nodeId) && toQuery.size() < 3) {
-                        toQuery.add(p.nodeId);
+                        toQuery.add(p);
                         queried.add(p.nodeId);
                     }
                 }
                 if (toQuery.isEmpty()) break;
 
                 boolean progress = false;
-                for (PeerId peer : toQuery) {
+                for (KadPeer peer : toQuery) {
                     try {
-                        var resp = com.libp2p.kademlia.protocol.RpcCodec.findNode(target);
-                        // simplified — full impl would use protocol.sendMessage
-                        List<Multiaddr> addrs;
-                        try { addrs = new ArrayList<>(host.getAddressBook().getAddrs(peer).get(5, TimeUnit.SECONDS)); }
-                        catch (Exception e) { addrs = List.of(); }
-                        if (!addrs.isEmpty()) {
-                            routingTable.markSeen(peer);
+                        var result = protocol.sendFindNode(target, peer.nodeId).get(
+                                peerTimeout.toSeconds(), TimeUnit.SECONDS);
+                        routingTable.markSeen(peer.nodeId);
+                        for (KadPeer closer : result.closerPeers()) {
+                            if (!queried.contains(closer.nodeId)) {
+                                candidates.add(closer);
+                                routingTable.insert(closer.nodeId, closer.multiaddrs);
+                                progress = true;
+                            }
                         }
                     } catch (Exception e) {
-                        routingTable.remove(peer);
+                        routingTable.remove(peer.nodeId);
                     }
                 }
                 noProgress = progress ? 0 : noProgress + 1;

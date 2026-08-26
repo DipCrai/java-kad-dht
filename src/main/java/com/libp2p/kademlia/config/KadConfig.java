@@ -30,6 +30,7 @@ public class KadConfig {
     private final int maxRecordValueSize;
     private final int maxConcurrentQueries;
     private final int maxInboundRequests;
+    private final int quorum;
     private final List<Multiaddr> bootstrapNodes;
     private final KadMode mode;
     private final RecordValidator validator;
@@ -55,6 +56,7 @@ public class KadConfig {
         this.maxRecordValueSize = builder.maxRecordValueSize;
         this.maxConcurrentQueries = builder.maxConcurrentQueries;
         this.maxInboundRequests = builder.maxInboundRequests;
+        this.quorum = builder.quorum;
         this.bootstrapNodes = Collections.unmodifiableList(new ArrayList<>(builder.bootstrapNodes));
         this.mode = builder.mode;
         this.validator = builder.validator;
@@ -80,6 +82,7 @@ public class KadConfig {
     public int getMaxRecordValueSize() { return maxRecordValueSize; }
     public int getMaxConcurrentQueries() { return maxConcurrentQueries; }
     public int getMaxInboundRequests() { return maxInboundRequests; }
+    public int getQuorum() { return quorum; }
     public List<Multiaddr> getBootstrapNodes() { return bootstrapNodes; }
     public KadMode getMode() { return mode; }
     public RecordValidator getValidator() { return validator; }
@@ -110,6 +113,7 @@ public class KadConfig {
         private int maxRecordValueSize = 65536;
         private int maxConcurrentQueries = 100;
         private int maxInboundRequests = 100;
+        private int quorum = 3;
         private List<Multiaddr> bootstrapNodes = new ArrayList<>();
         private KadMode mode = KadMode.AUTO_SERVER;
         private RecordValidator validator = RecordValidator.NOOP;
@@ -136,6 +140,7 @@ public class KadConfig {
         public Builder maxRecordValueSize(int maxRecordValueSize) { this.maxRecordValueSize = maxRecordValueSize; return this; }
         public Builder maxConcurrentQueries(int maxConcurrentQueries) { this.maxConcurrentQueries = maxConcurrentQueries; return this; }
         public Builder maxInboundRequests(int maxInboundRequests) { this.maxInboundRequests = maxInboundRequests; return this; }
+        public Builder quorum(int quorum) { this.quorum = quorum; return this; }
         public Builder bootstrapNodes(List<Multiaddr> bootstrapNodes) { this.bootstrapNodes = new ArrayList<>(bootstrapNodes); return this; }
         public Builder mode(KadMode mode) { this.mode = mode; return this; }
         public Builder validator(RecordValidator validator) { this.validator = validator; return this; }

@@ -57,10 +57,12 @@ public class KadDht {
         this.protocol.setRoutingTable(routingTable);
         this.protocol.setRecordStore(recordStore);
         this.protocol.setProviderStore(providerStore);
+        this.protocol.setValidator(config.getValidator() != null ? config.getValidator() : RecordValidator.NOOP);
 
         this.identifyAdapter = new IdentifyAdapter(routingTable, null, config.getProtocolName());
         this.bootstrapManager = new BootstrapManager(routingTable, null, config.getBootstrapNodes(), config.getSubstreamTimeout());
         this.rtRefresh = new RoutingTableRefresh(routingTable, null, config.getBootstrapInterval(), config.getPendingTimeout());
+        this.rtRefresh.setProtocol(protocol);
 
         this.scheduler = Executors.newScheduledThreadPool(4, r -> {
             Thread t = new Thread(r, "kad-dht");
@@ -163,6 +165,9 @@ public class KadDht {
     public CompletableFuture<Record> getValue(byte[] key) {
         return iterativeGetValueLookup(key)
                 .thenCompose(result -> {
+                    int successfulPeers = result.getQueriedPeers().size();
+                    int quorum = config.getQuorum();
+
                     List<Record> collected = new ArrayList<>();
                     if (result.getRecord() != null) collected.add(result.getRecord());
 
@@ -173,6 +178,9 @@ public class KadDht {
                     }
 
                     if (collected.isEmpty()) return CompletableFuture.completedFuture(null);
+                    if (successfulPeers < quorum && collected.size() == 1) {
+                        return CompletableFuture.completedFuture(null);
+                    }
 
                     Record best = selectBestRecord(collected);
 
@@ -203,11 +211,14 @@ public class KadDht {
                 if (!bestValid && candValid) { best = candidate; continue; }
                 if (bestValid && !candValid) continue;
                 if (!bestValid && !candValid) continue;
-            }
-            if (candidate.getTimeReceived() != null && best.getTimeReceived() != null) {
-                if (candidate.getTimeReceived().isAfter(best.getTimeReceived())) best = candidate;
-            } else if (best.getTimeReceived() == null && candidate.getTimeReceived() != null) {
-                best = candidate;
+                int cmp = config.getValidator().select(best.getKey(), new byte[][]{best.getValue(), candidate.getValue()});
+                if (cmp == 1) best = candidate;
+            } else {
+                if (candidate.getTimeReceived() != null && best.getTimeReceived() != null) {
+                    if (candidate.getTimeReceived().isAfter(best.getTimeReceived())) best = candidate;
+                } else if (best.getTimeReceived() == null && candidate.getTimeReceived() != null) {
+                    best = candidate;
+                }
             }
         }
         return best;
@@ -277,39 +288,95 @@ public class KadDht {
 
     private CompletableFuture<IterativeLookup> runIterativeLookup(IterativeLookup lookup) {
         return CompletableFuture.supplyAsync(() -> {
+            int alpha = config.getAlphaValue();
+            java.util.concurrent.Semaphore slots = new java.util.concurrent.Semaphore(alpha);
+            java.util.List<CompletableFuture<Void>> inFlight = new java.util.concurrent.CopyOnWriteArrayList<>();
+
             while (!lookup.isFinished()) {
                 PeerId next = lookup.next();
-                if (next == null) break;
-                try {
-                    var result = protocol.sendFindNode(lookup.getTarget(), next).get(
-                            config.getSubstreamTimeout().toSeconds(), TimeUnit.SECONDS);
-                    lookup.onResponse(next, result.closerPeers());
-                } catch (Exception e) {
-                    lookup.onFailure(next);
+                if (next == null) {
+                    if (inFlight.isEmpty()) break;
+                    try { Thread.sleep(50); } catch (InterruptedException e) { break; }
+                    inFlight.removeIf(CompletableFuture::isDone);
+                    continue;
                 }
+                try { slots.acquire(); } catch (InterruptedException e) { break; }
+                CompletableFuture<Void> query = CompletableFuture.runAsync(() -> {
+                    try {
+                        var result = protocol.sendFindNode(lookup.getTarget(), next).get(
+                                config.getSubstreamTimeout().toSeconds(), TimeUnit.SECONDS);
+                        lookup.onResponse(next, result.closerPeers());
+                    } catch (Exception e) {
+                        lookup.onFailure(next);
+                    } finally {
+                        slots.release();
+                    }
+                }, scheduler);
+                inFlight.add(query);
             }
+            CompletableFuture.allOf(inFlight.toArray(CompletableFuture[]::new)).join();
             return lookup;
         }, scheduler);
     }
 
     private CompletableFuture<IterativeLookup> runGetValueLookup(IterativeLookup lookup) {
         return CompletableFuture.supplyAsync(() -> {
+            int alpha = config.getAlphaValue();
+            java.util.concurrent.Semaphore slots = new java.util.concurrent.Semaphore(alpha);
+            java.util.List<CompletableFuture<Void>> inFlight = new java.util.concurrent.CopyOnWriteArrayList<>();
+
             while (!lookup.isFinished()) {
                 PeerId next = lookup.next();
-                if (next == null) break;
-                IterativeLookup.GetValueResult result = lookup.queryNextGetValue();
+                if (next == null) {
+                    if (inFlight.isEmpty()) break;
+                    try { Thread.sleep(50); } catch (InterruptedException e) { break; }
+                    inFlight.removeIf(CompletableFuture::isDone);
+                    continue;
+                }
+                try { slots.acquire(); } catch (InterruptedException e) { break; }
+                CompletableFuture<Void> query = CompletableFuture.runAsync(() -> {
+                    try {
+                        IterativeLookup.GetValueResult result = lookup.queryNextGetValue();
+                    } catch (Exception e) {
+                        lookup.onFailure(next);
+                    } finally {
+                        slots.release();
+                    }
+                }, scheduler);
+                inFlight.add(query);
             }
+            CompletableFuture.allOf(inFlight.toArray(CompletableFuture[]::new)).join();
             return lookup;
         }, scheduler);
     }
 
     private CompletableFuture<IterativeLookup> runGetProvidersLookup(IterativeLookup lookup) {
         return CompletableFuture.supplyAsync(() -> {
+            int alpha = config.getAlphaValue();
+            java.util.concurrent.Semaphore slots = new java.util.concurrent.Semaphore(alpha);
+            java.util.List<CompletableFuture<Void>> inFlight = new java.util.concurrent.CopyOnWriteArrayList<>();
+
             while (!lookup.isFinished()) {
                 PeerId next = lookup.next();
-                if (next == null) break;
-                IterativeLookup.GetProvidersResult result = lookup.queryNextGetProviders();
+                if (next == null) {
+                    if (inFlight.isEmpty()) break;
+                    try { Thread.sleep(50); } catch (InterruptedException e) { break; }
+                    inFlight.removeIf(CompletableFuture::isDone);
+                    continue;
+                }
+                try { slots.acquire(); } catch (InterruptedException e) { break; }
+                CompletableFuture<Void> query = CompletableFuture.runAsync(() -> {
+                    try {
+                        IterativeLookup.GetProvidersResult result = lookup.queryNextGetProviders();
+                    } catch (Exception e) {
+                        lookup.onFailure(next);
+                    } finally {
+                        slots.release();
+                    }
+                }, scheduler);
+                inFlight.add(query);
             }
+            CompletableFuture.allOf(inFlight.toArray(CompletableFuture[]::new)).join();
             return lookup;
         }, scheduler);
     }

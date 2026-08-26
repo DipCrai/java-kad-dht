@@ -34,20 +34,36 @@ public class RoutingTable {
         }
     }
 
-    public boolean insert(PeerId peerId, List<Multiaddr> addresses) {
-        if (peerId.equals(localPeerId)) return false;
+    public InsertOutcome insertOutcome(PeerId peerId, List<Multiaddr> addresses) {
+        if (peerId.equals(localPeerId)) return InsertOutcome.IGNORED;
         int bucketIdx = com.libp2p.kademlia.XorId.bucketIndex(localKey, com.libp2p.kademlia.XorId.fromPeerId(peerId));
         KBucketEntry entry = new KBucketEntry(peerId, addresses, Instant.now());
         KBucket.InsertResult result = buckets[bucketIdx].insert(entry);
         if (result == KBucket.InsertResult.INSERTED || result == KBucket.InsertResult.EVICTED) {
             allPeers.add(peerId);
-            return true;
+            return InsertOutcome.INSERTED;
         }
         if (result == KBucket.InsertResult.ALREADY_PRESENT) {
             allPeers.add(peerId);
-            return false;
+            return InsertOutcome.UPDATED;
         }
-        return false;
+        if (result == KBucket.InsertResult.PING) {
+            Optional<KBucketEntry> oldest = buckets[bucketIdx].getOldest();
+            return oldest.map(e -> new InsertOutcome(e.peerId)).orElse(InsertOutcome.INSERTED);
+        }
+        return InsertOutcome.IGNORED;
+    }
+
+    public boolean insert(PeerId peerId, List<Multiaddr> addresses) {
+        InsertOutcome outcome = insertOutcome(peerId, addresses);
+        return outcome == InsertOutcome.INSERTED || outcome == InsertOutcome.UPDATED || outcome.needsPing();
+    }
+
+    public record InsertOutcome(PeerId peerToPing) {
+        public static final InsertOutcome INSERTED = new InsertOutcome(null);
+        public static final InsertOutcome UPDATED = new InsertOutcome(null);
+        public static final InsertOutcome IGNORED = new InsertOutcome(null);
+        public boolean needsPing() { return peerToPing != null; }
     }
 
     public Optional<KBucketEntry> remove(PeerId peerId) {

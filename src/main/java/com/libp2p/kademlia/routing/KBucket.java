@@ -38,7 +38,11 @@ public class KBucket {
         KBucketEntry oldest = entries.get(entries.size() - 1);
         if (Duration.between(oldest.getLastSeen(), Instant.now()).compareTo(pendingTimeout) > 0) {
             entries.remove(entries.size() - 1);
-            entries.add(0, entry);
+            if (!replacementCache.isEmpty()) {
+                entries.add(0, replacementCache.remove(0));
+            } else {
+                entries.add(0, entry);
+            }
             return InsertResult.EVICTED;
         }
 
@@ -47,7 +51,7 @@ public class KBucket {
             replacementCache.remove(replacementCache.size() - 1);
         }
         replacementCache.add(0, entry);
-        return InsertResult.FULL;
+        return InsertResult.PING;
     }
 
     public synchronized Optional<KBucketEntry> remove(PeerId peerId) {
@@ -92,6 +96,6 @@ public class KBucket {
     }
 
     public enum InsertResult {
-        INSERTED, ALREADY_PRESENT, FULL, EVICTED
+        INSERTED, ALREADY_PRESENT, FULL, EVICTED, PING
     }
 }

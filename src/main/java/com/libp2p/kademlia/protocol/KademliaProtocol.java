@@ -28,6 +28,7 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
     private volatile Host host;
     private volatile RecordStore recordStore;
     private volatile ProviderStore providerStore;
+    private volatile com.libp2p.kademlia.records.RecordValidator validator = com.libp2p.kademlia.records.RecordValidator.NOOP;
 
     public KademliaProtocol(String protocolName, int kValue, Duration substreamTimeout, Duration providerRecordTTL) {
         this.protocolName = protocolName;
@@ -59,6 +60,7 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
     public void setRoutingTable(RoutingTable rt) { this.routingTable = rt; }
     public void setRecordStore(RecordStore store) { this.recordStore = store; }
     public void setProviderStore(ProviderStore store) { this.providerStore = store; }
+    public void setValidator(com.libp2p.kademlia.records.RecordValidator v) { this.validator = v; }
 
     public CompletableFuture<Dht.Message> sendMessage(PeerId peer, Dht.Message msg) {
         return CompletableFuture.supplyAsync(() -> {
@@ -133,6 +135,7 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
         byte[] key = pbRec.getKey().toByteArray();
         byte[] value = pbRec.getValue().toByteArray();
         if (recordStore != null && value.length > 0) {
+            if (!validator.validate(key, value)) return Dht.Message.newBuilder().setType(Dht.Message.MessageType.PUT_VALUE).build();
             byte[] publisher = pbRec.hasPublisher() && !pbRec.getPublisher().isEmpty()
                     ? pbRec.getPublisher().toByteArray() : requester.getBytes();
             Instant expires = pbRec.hasTtl() && pbRec.getTtl() > 0 ? Instant.now().plusSeconds(pbRec.getTtl()) : null;
