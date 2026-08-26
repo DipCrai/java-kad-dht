@@ -88,6 +88,37 @@ class QuerySchedulerTest {
     }
 
     @Test
+    void testCancelIdempotent() throws Exception {
+        IterativeLookup lookup = createLookup();
+        AtomicInteger counter = new AtomicInteger(0);
+
+        QueryScheduler scheduler = new QueryScheduler(1, lookup, id -> {
+            counter.incrementAndGet();
+            try { Thread.sleep(100); } catch (InterruptedException ignored) {}
+            return CompletableFuture.completedFuture(null);
+        });
+
+        List<PeerId> peers = new ArrayList<>();
+        for (int i = 0; i < 10; i++) peers.add(PeerId.random());
+
+        scheduler.submitPeers(peers);
+
+        int countBefore = counter.get();
+        int activeBefore = scheduler.getGlobalActiveCount();
+
+        scheduler.cancel();
+        scheduler.cancel();
+        scheduler.cancel();
+
+        int countAfter = counter.get();
+        int activeAfter = scheduler.getGlobalActiveCount();
+
+        assertFalse(countAfter < 0, "counter must not go negative");
+        assertTrue(activeAfter >= 0, "active count must not go negative");
+        assertTrue(activeAfter <= activeBefore, "active count should not increase after cancel");
+    }
+
+    @Test
     void testNewPeerDiscovery() throws Exception {
         IterativeLookup lookup = createLookup();
         AtomicInteger counter = new AtomicInteger(0);

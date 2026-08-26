@@ -17,15 +17,17 @@ public class BootstrapManager {
     private final List<Multiaddr> bootstrapNodes;
     private final Duration connectTimeout;
     private final Duration queryTimeout;
+    private final long bootstrapAddressTTL;
     private volatile boolean bootstrapped = false;
     private volatile java.util.function.Function<byte[], CompletableFuture<Void>> findNodeFn;
 
-    public BootstrapManager(RoutingTable routingTable, Host host, List<Multiaddr> bootstrapNodes, Duration connectTimeout, Duration queryTimeout) {
+    public BootstrapManager(RoutingTable routingTable, Host host, List<Multiaddr> bootstrapNodes, Duration connectTimeout, Duration queryTimeout, long bootstrapAddressTTL) {
         this.routingTable = routingTable;
         this.host = host;
         this.bootstrapNodes = bootstrapNodes;
         this.connectTimeout = connectTimeout;
         this.queryTimeout = queryTimeout;
+        this.bootstrapAddressTTL = bootstrapAddressTTL;
     }
 
     public void setHost(Host host) { this.host = host; }
@@ -54,9 +56,10 @@ public class BootstrapManager {
                 String[] parts = addrStr.split("/p2p/");
                 if (parts.length > 1) {
                     PeerId peerId = PeerId.fromBase58(parts[1]);
-                    host.getAddressBook().addAddrs(peerId, 300_000, addr);
+                    host.getAddressBook().addAddrs(peerId, bootstrapAddressTTL, addr);
                     futures.add(host.newStream(List.of("/ipfs/ping/1.0.0"), peerId)
                             .getController()
+                            .orTimeout(connectTimeout.toMillis(), TimeUnit.MILLISECONDS)
                             .thenAccept(ctrl -> routingTable.markSeen(peerId))
                             .exceptionally(ex -> null));
                 }
@@ -75,7 +78,7 @@ public class BootstrapManager {
         if (host == null) return CompletableFuture.completedFuture(null);
         byte[] selfKey = XorId.fromPeerId(host.getPeerId());
         List<CompletableFuture<Void>> futures = new ArrayList<>();
-        for (int i = 1; i < 256; i++) {
+        for (int i = 0; i < 256; i++) {
             if (routingTable.getBucket(i).size() > 0) {
                 byte[] randomKey = XorId.generateRandomKeyForBucket(selfKey, i);
                 futures.add(iterativeFindNode(randomKey));

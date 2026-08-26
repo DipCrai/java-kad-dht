@@ -20,15 +20,16 @@ public class QueryScheduler {
     private final CompletableFuture<Void> allDone = new CompletableFuture<>();
     private volatile boolean cancelled = false;
     private volatile com.libp2p.kademlia.query.QueryFilter queryFilter;
-    private static final AtomicInteger globalActiveQueries = new AtomicInteger(0);
-    private static volatile int globalMaxConcurrent = Integer.MAX_VALUE;
+    private final AtomicInteger globalActiveQueries = new AtomicInteger(0);
+    private volatile int globalMaxConcurrent = Integer.MAX_VALUE;
 
     public QueryScheduler(int maxInFlight, IterativeLookup lookup,
                           java.util.function.Function<PeerId, CompletableFuture<Void>> queryFunction,
-                          Duration queryTimeout, ScheduledExecutorService scheduler) {
+                          Duration queryTimeout, ScheduledExecutorService scheduler, int globalMaxConcurrent) {
         this.maxInFlight = maxInFlight;
         this.lookup = lookup;
         this.queryFunction = queryFunction;
+        this.globalMaxConcurrent = globalMaxConcurrent;
         lookup.getCancellation().whenComplete((v, ex) -> {
             cancel();
         });
@@ -40,15 +41,17 @@ public class QueryScheduler {
     }
 
     public QueryScheduler(int maxInFlight, IterativeLookup lookup,
+                          java.util.function.Function<PeerId, CompletableFuture<Void>> queryFunction,
+                          Duration queryTimeout, ScheduledExecutorService scheduler) {
+        this(maxInFlight, lookup, queryFunction, null, scheduler, Integer.MAX_VALUE);
+    }
+
+    public QueryScheduler(int maxInFlight, IterativeLookup lookup,
                           java.util.function.Function<PeerId, CompletableFuture<Void>> queryFunction) {
-        this(maxInFlight, lookup, queryFunction, null, null);
+        this(maxInFlight, lookup, queryFunction, null, null, Integer.MAX_VALUE);
     }
 
-    public static void setGlobalMaxConcurrent(int max) {
-        globalMaxConcurrent = max;
-    }
-
-    public static int getGlobalActiveCount() {
+    public int getGlobalActiveCount() {
         return globalActiveQueries.get();
     }
 
@@ -84,9 +87,11 @@ public class QueryScheduler {
             future.whenComplete((v, ex) -> {
                 inFlight.remove(next);
                 inFlightFutures.remove(next);
-                completed.add(next);
-                activeCount.decrementAndGet();
-                globalActiveQueries.decrementAndGet();
+                if (!cancelled) {
+                    completed.add(next);
+                    activeCount.decrementAndGet();
+                    globalActiveQueries.decrementAndGet();
+                }
                 dispatch();
             });
         }
@@ -114,10 +119,7 @@ public class QueryScheduler {
             f.cancel(true);
         }
         inFlightFutures.clear();
-        activeCount.set(0);
-        globalActiveQueries.addAndGet(-inFlight.size());
         inFlight.clear();
-        completed.clear();
         allDone.complete(null);
     }
 }

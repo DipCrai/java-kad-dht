@@ -45,6 +45,8 @@ public class KadConfig {
     private final PeerDiversityPolicy peerDiversityPolicy;
     private final QueryFilter queryFilter;
     private final AdmissionCheck admissionCheck;
+    private final Duration bootstrapAddressTTL;
+    private final Duration peerAddressTTL;
 
     private KadConfig(Builder builder) {
         this.protocolName = builder.protocolName;
@@ -78,6 +80,8 @@ public class KadConfig {
         this.peerDiversityPolicy = builder.peerDiversityPolicy;
         this.queryFilter = builder.queryFilter;
         this.admissionCheck = builder.admissionCheck;
+        this.bootstrapAddressTTL = builder.bootstrapAddressTTL;
+        this.peerAddressTTL = builder.peerAddressTTL;
     }
 
     public String getProtocolName() { return protocolName; }
@@ -111,6 +115,8 @@ public class KadConfig {
     public PeerDiversityPolicy getPeerDiversityPolicy() { return peerDiversityPolicy; }
     public QueryFilter getQueryFilter() { return queryFilter; }
     public AdmissionCheck getAdmissionCheck() { return admissionCheck; }
+    public Duration getBootstrapAddressTTL() { return bootstrapAddressTTL; }
+    public Duration getPeerAddressTTL() { return peerAddressTTL; }
 
     public static Builder builder() {
         return new Builder();
@@ -149,6 +155,8 @@ public class KadConfig {
         private PeerDiversityPolicy peerDiversityPolicy = new DefaultPeerDiversityPolicy();
         private QueryFilter queryFilter;
         private AdmissionCheck admissionCheck = AdmissionCheck.ALLOW_ALL;
+        private Duration bootstrapAddressTTL = Duration.ofMinutes(5);
+        private Duration peerAddressTTL = Duration.ofMinutes(30);
 
         private Builder() {}
 
@@ -183,6 +191,8 @@ public class KadConfig {
         public Builder peerDiversityPolicy(PeerDiversityPolicy peerDiversityPolicy) { this.peerDiversityPolicy = peerDiversityPolicy; return this; }
         public Builder queryFilter(QueryFilter queryFilter) { this.queryFilter = queryFilter; return this; }
         public Builder admissionCheck(AdmissionCheck admissionCheck) { this.admissionCheck = admissionCheck; return this; }
+        public Builder bootstrapAddressTTL(Duration bootstrapAddressTTL) { this.bootstrapAddressTTL = bootstrapAddressTTL; return this; }
+        public Builder peerAddressTTL(Duration peerAddressTTL) { this.peerAddressTTL = peerAddressTTL; return this; }
 
         public KadConfig build() {
             if (kValue <= 0) throw new IllegalArgumentException("kValue must be > 0, got " + kValue);

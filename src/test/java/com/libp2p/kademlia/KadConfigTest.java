@@ -40,6 +40,8 @@ class KadConfigTest {
         assertEquals(1, config.getDisjointPaths());
         assertEquals(KadMode.AUTO_SERVER, config.getMode());
         assertTrue(config.getBootstrapNodes().isEmpty());
+        assertEquals(Duration.ofMinutes(5), config.getBootstrapAddressTTL());
+        assertEquals(Duration.ofMinutes(30), config.getPeerAddressTTL());
     }
 
     @Test
@@ -118,5 +120,38 @@ class KadConfigTest {
         assertFalse(KadMode.SERVER.isClient());
         assertFalse(KadMode.AUTO.isClient());
         assertFalse(KadMode.AUTO_SERVER.isClient());
+    }
+
+    @Test
+    void testBootstrapAddressTTLCustom() {
+        KadConfig config = KadConfig.builder()
+                .bootstrapAddressTTL(Duration.ofMinutes(15))
+                .build();
+        assertEquals(Duration.ofMinutes(15), config.getBootstrapAddressTTL());
+    }
+
+    @Test
+    void testPeerAddressTTLCustom() {
+        KadConfig config = KadConfig.builder()
+                .peerAddressTTL(Duration.ofHours(2))
+                .build();
+        assertEquals(Duration.ofHours(2), config.getPeerAddressTTL());
+    }
+
+    @Test
+    void testAddressTTLDefaults() {
+        KadConfig config = KadConfig.builder().build();
+        assertEquals(Duration.ofMinutes(5), config.getBootstrapAddressTTL());
+        assertEquals(Duration.ofMinutes(30), config.getPeerAddressTTL());
+    }
+
+    @Test
+    void testAddressTTLInBuilder() {
+        KadConfig config = KadConfig.builder()
+                .bootstrapAddressTTL(Duration.ofMinutes(10))
+                .peerAddressTTL(Duration.ofMinutes(45))
+                .build();
+        assertEquals(Duration.ofMinutes(10), config.getBootstrapAddressTTL());
+        assertEquals(Duration.ofMinutes(45), config.getPeerAddressTTL());
     }
 }

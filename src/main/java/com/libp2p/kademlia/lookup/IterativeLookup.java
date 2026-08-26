@@ -34,6 +34,7 @@ public class IterativeLookup {
     private volatile com.libp2p.kademlia.integration.IdentifyAdapter identifyAdapter;
     private volatile com.libp2p.kademlia.routing.RoutingTable lookupRoutingTable;
     private volatile java.util.Set<PeerId> excludedPeers;
+    private long peerAddressTTLSeconds = 1800;
 
     public IterativeLookup(byte[] target, List<KadPeer> seedPeers, int k, int alpha, int beta,
                            Duration peerTimeout, KademliaProtocol protocol, int quorum) {
@@ -159,7 +160,7 @@ public class IterativeLookup {
     private void updateRoutingTable(PeerId peerId, List<io.libp2p.core.multiformats.Multiaddr> addrs) {
         if (host != null && addrs != null && !addrs.isEmpty()) {
             try {
-                host.getAddressBook().addAddrs(peerId, 1800, addrs.toArray(io.libp2p.core.multiformats.Multiaddr[]::new));
+                host.getAddressBook().addAddrs(peerId, peerAddressTTLSeconds, addrs.toArray(io.libp2p.core.multiformats.Multiaddr[]::new));
             } catch (Exception ignored) {}
         }
         if (lookupRoutingTable != null) {
@@ -323,6 +324,7 @@ public class IterativeLookup {
     public void setIdentifyAdapter(com.libp2p.kademlia.integration.IdentifyAdapter adapter) { this.identifyAdapter = adapter; }
     public void setLookupRoutingTable(com.libp2p.kademlia.routing.RoutingTable rt) { this.lookupRoutingTable = rt; }
     public void setExcludedPeers(java.util.Set<PeerId> excluded) { this.excludedPeers = excluded; }
+    public void setPeerAddressTTLSeconds(long seconds) { this.peerAddressTTLSeconds = seconds; }
     public void addCandidateRecords(List<com.libp2p.kademlia.records.Record> records) { this.candidateRecords.addAll(records); }
 
     public enum PeerStateInner { NOT_CONTACTED, WAITING, UNRESPONSIVE, FAILED, SUCCEEDED }
