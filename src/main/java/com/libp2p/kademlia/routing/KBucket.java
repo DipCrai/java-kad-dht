@@ -1,4 +1,4 @@
-package com.libp2p.kademlia;
+package com.libp2p.kademlia.routing;
 
 import io.libp2p.core.PeerId;
 
@@ -23,8 +23,9 @@ public class KBucket {
     public synchronized InsertResult insert(KBucketEntry entry) {
         for (int i = 0; i < entries.size(); i++) {
             if (entries.get(i).peerId.equals(entry.peerId)) {
-                entries.remove(i);
-                entries.add(0, entry);
+                KBucketEntry existing = entries.remove(i);
+                existing.markSeen(Instant.now());
+                entries.add(0, existing);
                 return InsertResult.ALREADY_PRESENT;
             }
         }
@@ -68,6 +69,15 @@ public class KBucket {
                 KBucketEntry entry = entries.remove(i);
                 entry.markSeen(now);
                 entries.add(0, entry);
+                return;
+            }
+        }
+    }
+
+    public synchronized void markSuccessfulOutbound(PeerId peerId, Instant now) {
+        for (KBucketEntry entry : entries) {
+            if (entry.peerId.equals(peerId)) {
+                entry.markSuccessfulOutbound(now);
                 return;
             }
         }

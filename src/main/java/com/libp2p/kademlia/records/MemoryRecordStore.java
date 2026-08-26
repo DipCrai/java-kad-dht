@@ -1,4 +1,4 @@
-package com.libp2p.kademlia;
+package com.libp2p.kademlia.records;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -6,23 +6,12 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
 
-/**
- * In-memory record store with TTL-based GC.
- * Port of rust MemoryStore + go ValueStore.
- *
- * Limits:
- * - maxRecords: 1024 (default)
- * - maxRecordValueSize: 65KB
- * - recordMaxAge: 48h
- * - 256 striped locks indexed by last byte of key
- */
 public class MemoryRecordStore implements RecordStore {
     private final int maxRecords;
     private final int maxRecordValueSize;
     private final Duration maxRecordAge;
     private final RecordValidator validator;
     private final Map<ByteKey, Record> records = new ConcurrentHashMap<>();
-
     private static final int STRIPE_COUNT = 256;
     private final ReentrantLock[] stripes = new ReentrantLock[STRIPE_COUNT];
 
@@ -31,13 +20,7 @@ public class MemoryRecordStore implements RecordStore {
         this.maxRecordValueSize = maxRecordValueSize;
         this.maxRecordAge = maxRecordAge;
         this.validator = validator;
-        for (int i = 0; i < STRIPE_COUNT; i++) {
-            stripes[i] = new ReentrantLock();
-        }
-    }
-
-    public MemoryRecordStore(RecordValidator validator) {
-        this(1024, 65 * 1024, Duration.ofHours(48), validator);
+        for (int i = 0; i < STRIPE_COUNT; i++) stripes[i] = new ReentrantLock();
     }
 
     private ReentrantLock stripeFor(byte[] key) {
@@ -48,10 +31,7 @@ public class MemoryRecordStore implements RecordStore {
     public Record get(byte[] key) {
         Record record = records.get(new ByteKey(key));
         if (record == null) return null;
-        if (record.isExpired()) {
-            records.remove(new ByteKey(key));
-            return null;
-        }
+        if (record.isExpired()) { records.remove(new ByteKey(key)); return null; }
         if (maxRecordAge != null && record.getTimeReceived() != null) {
             if (Instant.now().isAfter(record.getTimeReceived().plus(maxRecordAge))) {
                 records.remove(new ByteKey(key));
@@ -73,19 +53,11 @@ public class MemoryRecordStore implements RecordStore {
         try {
             ByteKey bk = new ByteKey(record.getKey());
             Record existing = records.get(bk);
-
             if (existing != null && !existing.isExpired()) {
-                byte[][] candidates = new byte[][]{record.getValue(), existing.getValue()};
-                int best = validator.select(record.getKey(), candidates);
-                if (best != 0) {
-                    return false;
-                }
+                int best = validator.select(record.getKey(), new byte[][]{record.getValue(), existing.getValue()});
+                if (best != 0) return false;
             }
-
-            if (records.size() >= maxRecords && existing == null) {
-                evictOldest();
-            }
-
+            if (records.size() >= maxRecords && existing == null) evictOldest();
             Record toStore = record.copy();
             toStore.setTimeReceived(Instant.now());
             records.put(bk, toStore);
@@ -96,9 +68,7 @@ public class MemoryRecordStore implements RecordStore {
     }
 
     @Override
-    public void remove(byte[] key) {
-        records.remove(new ByteKey(key));
-    }
+    public void remove(byte[] key) { records.remove(new ByteKey(key)); }
 
     @Override
     public Iterable<Record> records() {
@@ -106,18 +76,25 @@ public class MemoryRecordStore implements RecordStore {
         Iterator<Map.Entry<ByteKey, Record>> it = records.entrySet().iterator();
         while (it.hasNext()) {
             Record r = it.next().getValue();
-            if (r.isExpired()) {
-                it.remove();
-            } else {
-                alive.add(r);
-            }
+            if (r.isExpired()) it.remove(); else alive.add(r);
         }
         return alive;
     }
 
     @Override
-    public int size() {
-        return records.size();
+    public int size() { return records.size(); }
+
+    public int garbageCollect() {
+        int removed = 0;
+        Iterator<Map.Entry<ByteKey, Record>> it = records.entrySet().iterator();
+        while (it.hasNext()) {
+            Record r = it.next().getValue();
+            if (r.isExpired()) { it.remove(); removed++; }
+            else if (maxRecordAge != null && r.getTimeReceived() != null && Instant.now().isAfter(r.getTimeReceived().plus(maxRecordAge))) {
+                it.remove(); removed++;
+            }
+        }
+        return removed;
     }
 
     private void evictOldest() {
@@ -125,56 +102,18 @@ public class MemoryRecordStore implements RecordStore {
         ByteKey oldestKey = null;
         for (Map.Entry<ByteKey, Record> e : records.entrySet()) {
             Record r = e.getValue();
-            if (oldest == null || (r.getTimeReceived() != null && oldest.getTimeReceived() != null
-                    && r.getTimeReceived().isBefore(oldest.getTimeReceived()))) {
-                oldest = r;
-                oldestKey = e.getKey();
+            if (oldest == null || (r.getTimeReceived() != null && oldest.getTimeReceived() != null && r.getTimeReceived().isBefore(oldest.getTimeReceived()))) {
+                oldest = r; oldestKey = e.getKey();
             }
         }
-        if (oldestKey != null) {
-            records.remove(oldestKey);
-        }
-    }
-
-    /**
-     * Remove all expired records (GC).
-     */
-    public int garbageCollect() {
-        int removed = 0;
-        Iterator<Map.Entry<ByteKey, Record>> it = records.entrySet().iterator();
-        while (it.hasNext()) {
-            Record r = it.next().getValue();
-            if (r.isExpired()) {
-                it.remove();
-                removed++;
-            } else if (maxRecordAge != null && r.getTimeReceived() != null
-                    && Instant.now().isAfter(r.getTimeReceived().plus(maxRecordAge))) {
-                it.remove();
-                removed++;
-            }
-        }
-        return removed;
+        if (oldestKey != null) records.remove(oldestKey);
     }
 
     static final class ByteKey {
         private final byte[] bytes;
         private final int hash;
-
-        ByteKey(byte[] bytes) {
-            this.bytes = bytes;
-            this.hash = Arrays.hashCode(bytes);
-        }
-
-        @Override
-        public boolean equals(Object o) {
-            if (this == o) return true;
-            if (!(o instanceof ByteKey other)) return false;
-            return Arrays.equals(bytes, other.bytes);
-        }
-
-        @Override
-        public int hashCode() {
-            return hash;
-        }
+        ByteKey(byte[] bytes) { this.bytes = bytes; this.hash = Arrays.hashCode(bytes); }
+        @Override public boolean equals(Object o) { return o instanceof ByteKey other && Arrays.equals(bytes, other.bytes); }
+        @Override public int hashCode() { return hash; }
     }
 }

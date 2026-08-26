@@ -1,42 +1,35 @@
-package com.libp2p.kademlia;
+package com.libp2p.kademlia.records;
 
 import io.libp2p.core.PeerId;
 import io.libp2p.core.multiformats.Multiaddr;
 
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Collections;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 
-/**
- * A provider record — indicates that a peer can provide content for a given key.
- * Port of rust-libp2p record::ProviderRecord.
- *
- * Equality is based on (key, provider) only — NOT addresses or expiry.
- */
 public class ProviderRecord {
+
     private final byte[] key;
     private final PeerId provider;
     private final Instant expires;
     private final List<Multiaddr> addresses;
 
     public ProviderRecord(byte[] key, PeerId provider, Instant expires, List<Multiaddr> addresses) {
-        this.key = key;
+        this.key = key.clone();
         this.provider = provider;
         this.expires = expires;
-        this.addresses = addresses != null
-                ? Collections.unmodifiableList(new ArrayList<>(addresses))
-                : List.of();
+        this.addresses = new ArrayList<>(addresses);
     }
 
-    public byte[] getKey() { return key; }
+    public byte[] getKey() { return key.clone(); }
     public PeerId getProvider() { return provider; }
     public Instant getExpires() { return expires; }
-    public List<Multiaddr> getAddresses() { return addresses; }
+    public List<Multiaddr> getAddresses() { return new ArrayList<>(addresses); }
 
     public boolean isExpired() {
-        return expires != null && Instant.now().isAfter(expires);
+        return isExpired(Instant.now());
     }
 
     public boolean isExpired(Instant now) {
@@ -46,19 +39,24 @@ public class ProviderRecord {
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
-        if (!(o instanceof ProviderRecord other)) return false;
-        return Objects.equals(provider, other.provider) && java.util.Arrays.equals(key, other.key);
+        if (o == null || getClass() != o.getClass()) return false;
+        ProviderRecord that = (ProviderRecord) o;
+        return Arrays.equals(key, that.key) && Objects.equals(provider, that.provider);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(provider, java.util.Arrays.hashCode(key));
+        int result = Arrays.hashCode(key);
+        result = 31 * result + Objects.hashCode(provider);
+        return result;
     }
 
     @Override
     public String toString() {
-        return "ProviderRecord{key=" + XorId.toHex(key) +
+        return "ProviderRecord{key=" + Arrays.toString(key) +
                 ", provider=" + provider +
-                ", addrs=" + addresses.size() + "}";
+                ", expires=" + expires +
+                ", addresses.size=" + addresses.size() +
+                '}';
     }
 }
