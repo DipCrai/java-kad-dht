@@ -85,7 +85,7 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
     }
 
     public CompletableFuture<FindNodeResponse> sendFindNode(byte[] key, PeerId peer) {
-        return sendMessage(peer, RpcCodec.findNode(key)).thenApply(FindNodeResponse::fromMessage);
+        return sendMessage(peer, RpcCodec.findNode(key)).thenApply(msg -> FindNodeResponse.fromMessage(msg, providerRecordTTL, providerAddrTTL));
     }
 
     public CompletableFuture<GetValueResponse> sendGetValue(byte[] key, PeerId peer) {
@@ -97,8 +97,16 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
                 msg.hasRecord() && Arrays.equals(msg.getRecord().getKey().toByteArray(), record.getKey()));
     }
 
-    public CompletableFuture<Boolean> sendPing(PeerId peer) {
-        return sendMessage(peer, RpcCodec.ping()).thenApply(msg -> msg.getType() == Dht.Message.MessageType.PING);
+    public CompletableFuture<Boolean> pingLiveness(PeerId peer, Duration timeout) {
+        if (host == null) return CompletableFuture.completedFuture(false);
+        try {
+            StreamPromise<io.libp2p.protocol.PingController> promise = host.newStream(List.of("/ipfs/ping/1.0.0"), peer);
+            io.libp2p.protocol.PingController ctrl = promise.getController().get(timeout.toSeconds(), TimeUnit.SECONDS);
+            if (ctrl == null) return CompletableFuture.completedFuture(false);
+            return ctrl.ping().thenApply(pong -> true).exceptionally(ex -> false);
+        } catch (Exception e) {
+            return CompletableFuture.completedFuture(false);
+        }
     }
 
     public CompletableFuture<Boolean> sendAddProvider(byte[] key, PeerId peer) {
@@ -106,7 +114,7 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
     }
 
     public CompletableFuture<GetProvidersResponse> sendGetProviders(byte[] key, PeerId peer) {
-        return sendMessage(peer, RpcCodec.getProviders(key)).thenApply(msg -> GetProvidersResponse.fromMessage(msg, providerStore));
+        return sendMessage(peer, RpcCodec.getProviders(key)).thenApply(msg -> GetProvidersResponse.fromMessage(msg, providerStore, providerRecordTTL, providerAddrTTL));
     }
 
     Dht.Message handlePing() { return RpcCodec.pong(); }
@@ -177,7 +185,7 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
                 builder.addProviderPeers(Dht.Message.Peer.newBuilder()
                         .setId(ByteString.copyFrom(pr.getProvider().getBytes()))
                         .setConnection(Dht.Message.ConnectionType.CONNECTED)
-                        .addAllAddrs(pr.getAddresses().stream().map(a -> ByteString.copyFrom(a.serialize())).toList()));
+                        .addAllAddrs(pr.getAliveAddresses().stream().map(a -> ByteString.copyFrom(a.serialize())).toList()));
             }
         }
         for (KadPeer p : routingTable.findClosest(key, kValue)) { if (!p.nodeId.equals(requester)) builder.addCloserPeers(toProtoPeer(p)); }
@@ -219,7 +227,7 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
     }
 
     public record FindNodeResponse(List<KadPeer> closerPeers) {
-        public static FindNodeResponse fromMessage(Dht.Message msg) {
+        public static FindNodeResponse fromMessage(Dht.Message msg, Duration providerRecordTTL, Duration providerAddrTTL) {
             List<KadPeer> closer = new ArrayList<>();
             for (Dht.Message.Peer p : msg.getCloserPeersList()) {
                 try {
@@ -260,7 +268,7 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
     }
 
     public record GetProvidersResponse(List<ProviderRecord> providers, List<KadPeer> closerPeers) {
-        public static GetProvidersResponse fromMessage(Dht.Message msg, ProviderStore store) {
+        public static GetProvidersResponse fromMessage(Dht.Message msg, ProviderStore store, Duration providerRecordTTL, Duration providerAddrTTL) {
             List<ProviderRecord> provs = new ArrayList<>();
             for (Dht.Message.Peer p : msg.getProviderPeersList()) {
                 try {
@@ -268,7 +276,7 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
                     List<Multiaddr> addrs = new ArrayList<>();
                     for (ByteString ab : p.getAddrsList()) { try { addrs.add(Multiaddr.deserialize(ab.toByteArray())); } catch (Exception ignored) {} }
                     ProviderRecord pr = new ProviderRecord(msg.getKey().toByteArray(), providerId,
-                            Instant.now().plus(Duration.ofHours(48)), Instant.now().plus(Duration.ofHours(24)), addrs);
+                            Instant.now().plus(providerRecordTTL), Instant.now().plus(providerAddrTTL), addrs);
                     provs.add(pr);
                     if (store != null) store.addProvider(pr);
                 } catch (Exception ignored) {}
@@ -287,9 +295,29 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
     }
 
     private boolean isValidProviderKey(byte[] key) {
-        if (key.length == 32) return true;
-        if (key.length == 34 && key[0] == 0x12 && key[1] == 0x20) return true;
-        return false;
+        if (key.length == 0) return false;
+        int pos = 0;
+        long hashFuncCode = 0;
+        int shift = 0;
+        while (pos < key.length) {
+            byte b = key[pos++];
+            hashFuncCode |= (long)(b & 0x7F) << shift;
+            if ((b & 0x80) == 0) break;
+            shift += 7;
+            if (shift > 63) return false;
+        }
+        if (pos >= key.length) return false;
+        long digestLength = 0;
+        shift = 0;
+        while (pos < key.length) {
+            byte b = key[pos++];
+            digestLength |= (long)(b & 0x7F) << shift;
+            if ((b & 0x80) == 0) break;
+            shift += 7;
+            if (shift > 63) return false;
+        }
+        if (digestLength < 0 || digestLength > Integer.MAX_VALUE) return false;
+        return pos + (int)digestLength == key.length;
     }
 
     public interface KademliaController {

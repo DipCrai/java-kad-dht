@@ -1,5 +1,6 @@
 package com.libp2p.kademlia.routing;
 
+import io.libp2p.core.Host;
 import io.libp2p.core.PeerId;
 import io.libp2p.core.multiformats.Multiaddr;
 
@@ -11,9 +12,9 @@ import java.util.stream.Collectors;
 public class RoutingTable {
     private volatile PeerId localPeerId;
     private volatile byte[] localKey;
+    private volatile Host host;
     private final int k;
     private final KBucket[] buckets;
-    private final Set<PeerId> allPeers = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     public RoutingTable(PeerId localPeerId, int k, Duration pendingTimeout) {
         this(localPeerId, k, 256);
@@ -22,6 +23,10 @@ public class RoutingTable {
     public void setLocalPeerId(PeerId peerId) {
         this.localPeerId = peerId;
         this.localKey = com.libp2p.kademlia.XorId.fromPeerId(peerId);
+    }
+
+    public void setHost(Host host) {
+        this.host = host;
     }
 
     public RoutingTable(PeerId localPeerId, int k, Duration pendingTimeout, int numBuckets) {
@@ -44,11 +49,9 @@ public class RoutingTable {
         KBucketEntry entry = new KBucketEntry(peerId, addresses, Instant.now());
         KBucket.InsertResult result = buckets[bucketIdx].insert(entry);
         if (result == KBucket.InsertResult.INSERTED) {
-            allPeers.add(peerId);
             return InsertOutcome.INSERTED;
         }
         if (result == KBucket.InsertResult.ALREADY_PRESENT) {
-            allPeers.add(peerId);
             return InsertOutcome.UPDATED;
         }
         if (result == KBucket.InsertResult.PING) {
@@ -74,7 +77,6 @@ public class RoutingTable {
         byte[] remoteKey = com.libp2p.kademlia.XorId.fromPeerId(peerId);
         int bucketIdx = com.libp2p.kademlia.XorId.bucketIndex(localKey, remoteKey);
         Optional<KBucketEntry> removed = buckets[bucketIdx].remove(peerId);
-        removed.ifPresent(e -> allPeers.remove(peerId));
         return removed;
     }
 
@@ -82,11 +84,6 @@ public class RoutingTable {
         byte[] remoteKey = com.libp2p.kademlia.XorId.fromPeerId(evicted);
         int bucketIdx = com.libp2p.kademlia.XorId.bucketIndex(localKey, remoteKey);
         boolean promoted = buckets[bucketIdx].promoteReplacement(evicted);
-        if (promoted) {
-            allPeers.remove(evicted);
-            List<KBucketEntry> entries = buckets[bucketIdx].getEntries();
-            if (!entries.isEmpty()) allPeers.add(entries.get(0).peerId);
-        }
         return promoted;
     }
 
@@ -104,7 +101,8 @@ public class RoutingTable {
         List<KadPeer> allKnown = new ArrayList<>();
         for (KBucket bucket : buckets) {
             for (KBucketEntry entry : bucket.getEntries()) {
-                allKnown.add(new KadPeer(entry.peerId, entry.getAddresses(), KadPeer.ConnectionType.CONNECTED));
+                KadPeer.ConnectionType connType = resolveConnectionType(entry.peerId);
+                allKnown.add(new KadPeer(entry.peerId, entry.getAddresses(), connType));
             }
         }
         allKnown.sort((a, b) -> {
@@ -115,7 +113,28 @@ public class RoutingTable {
         return allKnown.stream().limit(count).collect(Collectors.toList());
     }
 
-    public Set<PeerId> getAllPeers() { return Set.copyOf(allPeers); }
+    public KadPeer.ConnectionType resolveConnectionType(PeerId peerId) {
+        if (host != null) {
+            try {
+                for (io.libp2p.core.Connection conn : host.getNetwork().getConnections()) {
+                    if (conn.secureSession().getRemoteId().equals(peerId)) {
+                        return KadPeer.ConnectionType.CONNECTED;
+                    }
+                }
+            } catch (Exception ignored) {}
+        }
+        return KadPeer.ConnectionType.NOT_CONNECTED;
+    }
+
+    public Set<PeerId> getAllPeers() {
+        Set<PeerId> result = new HashSet<>();
+        for (KBucket bucket : buckets) {
+            for (KBucketEntry entry : bucket.getEntries()) {
+                result.add(entry.peerId);
+            }
+        }
+        return result;
+    }
     public PeerId getLocalPeerId() { return localPeerId; }
     public byte[] getLocalKey() { return localKey; }
     public byte[] getLocalNodeId() { return localKey; }

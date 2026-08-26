@@ -24,11 +24,12 @@ public class IterativeLookup {
     private int noProgressCount;
     private final List<PeerEntry> peers = new ArrayList<>();
     private volatile io.libp2p.core.Host host;
-    private volatile com.libp2p.kademlia.records.Record bestRecord;
+    private final List<com.libp2p.kademlia.records.Record> candidateRecords = new ArrayList<>();
     private final List<com.libp2p.kademlia.records.ProviderRecord> collectedProviders = new ArrayList<>();
     private final Map<PeerId, com.libp2p.kademlia.records.Record> peerRecords = new HashMap<>();
     private int recordsReceived = 0;
     private int quorum = 0;
+    private final CompletableFuture<Void> cancellation = new CompletableFuture<>();
 
     public IterativeLookup(byte[] target, List<KadPeer> seedPeers, int k, int alpha, int beta,
                            Duration peerTimeout, KademliaProtocol protocol, int quorum) {
@@ -111,12 +112,11 @@ public class IterativeLookup {
             if (newRecord != null) {
                 peerRecords.put(next, newRecord);
                 recordsReceived++;
-                if (newRecord.getTimeReceived() != null && (bestRecord == null || bestRecord.getTimeReceived() == null || newRecord.getTimeReceived().isAfter(bestRecord.getTimeReceived()))) {
-                    bestRecord = newRecord;
-                }
+                candidateRecords.add(newRecord);
             }
             if (quorum > 0 && recordsReceived >= quorum) {
                 state = LookupState.FINISHED;
+                cancellation.complete(null);
             } else {
                 checkTermination();
             }
@@ -194,9 +194,9 @@ public class IterativeLookup {
             for (PeerEntry pe : closestActive) {
                 if (pe.state != PeerStateInner.SUCCEEDED) { allOk = false; break; }
             }
-            if (allOk) { state = LookupState.FINISHED; return true; }
+            if (allOk) { state = LookupState.FINISHED; cancellation.complete(null); return true; }
         }
-        if (numHeard() == 0 && numWaiting() == 0) { state = LookupState.FINISHED; return true; }
+        if (numHeard() == 0 && numWaiting() == 0) { state = LookupState.FINISHED; cancellation.complete(null); return true; }
         return false;
     }
 
@@ -265,12 +265,33 @@ public class IterativeLookup {
 
     private PeerEntry find(PeerId id) { for (PeerEntry pe : peers) if (pe.peerId.equals(id)) return pe; return null; }
 
+    public List<PeerEntry> getAllPeerEntries() { return List.copyOf(peers); }
+
     public LookupState getState() { return state; }
     public boolean isFinished() { return state == LookupState.FINISHED; }
     public byte[] getTarget() { return target; }
-    public com.libp2p.kademlia.records.Record getRecord() { return bestRecord; }
+    public com.libp2p.kademlia.records.Record getRecord() { return candidateRecords.isEmpty() ? null : candidateRecords.get(0); }
+    public List<com.libp2p.kademlia.records.Record> getCandidateRecords() { return List.copyOf(candidateRecords); }
     public List<com.libp2p.kademlia.records.ProviderRecord> getProviders() { return collectedProviders; }
     public Map<PeerId, com.libp2p.kademlia.records.Record> getPeerRecords() { return Map.copyOf(peerRecords); }
+
+    public void setBestRecord(com.libp2p.kademlia.records.Record record) {
+        candidateRecords.clear();
+        if (record != null) candidateRecords.add(record);
+    }
+
+    public void setPeerRecords(Map<PeerId, com.libp2p.kademlia.records.Record> records) {
+        peerRecords.clear();
+        peerRecords.putAll(records);
+    }
+
+    public void addCollectedProviders(List<com.libp2p.kademlia.records.ProviderRecord> providers) {
+        collectedProviders.addAll(providers);
+    }
+    public int getAlpha() { return alpha; }
+    public int getK() { return k; }
+    public CompletableFuture<Void> getCancellation() { return cancellation; }
+    public void addCandidateRecords(List<com.libp2p.kademlia.records.Record> records) { this.candidateRecords.addAll(records); }
 
     public enum PeerStateInner { NOT_CONTACTED, WAITING, UNRESPONSIVE, FAILED, SUCCEEDED }
 

@@ -32,6 +32,10 @@ public class KadConfig {
     private final int maxConcurrentQueries;
     private final int maxInboundRequests;
     private final int quorum;
+    private final int replicationFactor;
+    private final int writeQuorum;
+    private final int readQuorum;
+    private final int disjointPaths;
     private final List<Multiaddr> bootstrapNodes;
     private final KadMode mode;
     private final RecordValidator validator;
@@ -59,6 +63,10 @@ public class KadConfig {
         this.maxConcurrentQueries = builder.maxConcurrentQueries;
         this.maxInboundRequests = builder.maxInboundRequests;
         this.quorum = builder.quorum;
+        this.replicationFactor = builder.replicationFactor;
+        this.writeQuorum = builder.writeQuorum;
+        this.readQuorum = builder.readQuorum;
+        this.disjointPaths = builder.disjointPaths;
         this.bootstrapNodes = Collections.unmodifiableList(new ArrayList<>(builder.bootstrapNodes));
         this.mode = builder.mode;
         this.validator = builder.validator;
@@ -86,6 +94,10 @@ public class KadConfig {
     public int getMaxConcurrentQueries() { return maxConcurrentQueries; }
     public int getMaxInboundRequests() { return maxInboundRequests; }
     public int getQuorum() { return quorum; }
+    public int getReplicationFactor() { return replicationFactor; }
+    public int getWriteQuorum() { return writeQuorum; }
+    public int getReadQuorum() { return readQuorum; }
+    public int getDisjointPaths() { return disjointPaths; }
     public List<Multiaddr> getBootstrapNodes() { return bootstrapNodes; }
     public KadMode getMode() { return mode; }
     public RecordValidator getValidator() { return validator; }
@@ -118,6 +130,10 @@ public class KadConfig {
         private int maxConcurrentQueries = 100;
         private int maxInboundRequests = 100;
         private int quorum = 3;
+        private int replicationFactor = 20;
+        private int writeQuorum = 1;
+        private int readQuorum = 1;
+        private int disjointPaths = 1;
         private List<Multiaddr> bootstrapNodes = new ArrayList<>();
         private KadMode mode = KadMode.AUTO_SERVER;
         private RecordValidator validator = RecordValidator.NOOP;
@@ -146,6 +162,10 @@ public class KadConfig {
         public Builder maxConcurrentQueries(int maxConcurrentQueries) { this.maxConcurrentQueries = maxConcurrentQueries; return this; }
         public Builder maxInboundRequests(int maxInboundRequests) { this.maxInboundRequests = maxInboundRequests; return this; }
         public Builder quorum(int quorum) { this.quorum = quorum; return this; }
+        public Builder replicationFactor(int replicationFactor) { this.replicationFactor = replicationFactor; return this; }
+        public Builder writeQuorum(int writeQuorum) { this.writeQuorum = writeQuorum; return this; }
+        public Builder readQuorum(int readQuorum) { this.readQuorum = readQuorum; return this; }
+        public Builder disjointPaths(int disjointPaths) { this.disjointPaths = disjointPaths; return this; }
         public Builder bootstrapNodes(List<Multiaddr> bootstrapNodes) { this.bootstrapNodes = new ArrayList<>(bootstrapNodes); return this; }
         public Builder mode(KadMode mode) { this.mode = mode; return this; }
         public Builder validator(RecordValidator validator) { this.validator = validator; return this; }

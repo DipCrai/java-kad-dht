@@ -11,4 +11,5 @@ public interface ProviderStore {
     Iterable<ProviderRecord> provided();
     void removeProvider(byte[] key, PeerId provider);
     int keyCount();
+    default int garbageCollect() { return 0; }
 }

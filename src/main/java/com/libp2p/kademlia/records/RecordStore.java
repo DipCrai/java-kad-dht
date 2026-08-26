@@ -9,4 +9,5 @@ public interface RecordStore {
     void remove(byte[] key);
     Iterable<Record> records();
     int size();
+    default int garbageCollect() { return 0; }
 }
