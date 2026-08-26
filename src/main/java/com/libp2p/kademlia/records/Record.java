@@ -18,14 +18,14 @@ public class Record {
     public Record(byte[] key, byte[] value, byte[] publisher, Instant expires) {
         this.key = key.clone();
         this.value = value.clone();
-        this.publisher = publisher.clone();
+        this.publisher = publisher != null ? publisher.clone() : null;
         this.expires = expires;
         this.timeReceived = Instant.now();
     }
 
     public byte[] getKey() { return key.clone(); }
     public byte[] getValue() { return value.clone(); }
-    public byte[] getPublisher() { return publisher.clone(); }
+    public byte[] getPublisher() { return publisher != null ? publisher.clone() : null; }
     public Instant getExpires() { return expires; }
     public Instant getTimeReceived() { return timeReceived; }
 

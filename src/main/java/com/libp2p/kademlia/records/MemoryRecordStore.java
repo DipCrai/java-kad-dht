@@ -42,6 +42,12 @@ public class MemoryRecordStore implements RecordStore {
     }
 
     @Override
+    public List<Record> getAll(byte[] key) {
+        Record r = get(key);
+        return r != null ? List.of(r) : List.of();
+    }
+
+    @Override
     public boolean put(Record record) {
         if (record.getKey() == null || record.getKey().length == 0) return false;
         if (record.getValue() == null || record.getValue().length == 0) return false;

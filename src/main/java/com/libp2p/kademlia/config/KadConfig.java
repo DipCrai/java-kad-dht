@@ -1,5 +1,6 @@
 package com.libp2p.kademlia.config;
 
+import com.libp2p.kademlia.records.RecordValidator;
 import io.libp2p.core.multiformats.Multiaddr;
 
 import java.time.Duration;
@@ -31,6 +32,7 @@ public class KadConfig {
     private final int maxInboundRequests;
     private final List<Multiaddr> bootstrapNodes;
     private final KadMode mode;
+    private final RecordValidator validator;
 
     private KadConfig(Builder builder) {
         this.protocolName = builder.protocolName;
@@ -55,6 +57,7 @@ public class KadConfig {
         this.maxInboundRequests = builder.maxInboundRequests;
         this.bootstrapNodes = Collections.unmodifiableList(new ArrayList<>(builder.bootstrapNodes));
         this.mode = builder.mode;
+        this.validator = builder.validator;
     }
 
     public String getProtocolName() { return protocolName; }
@@ -79,6 +82,7 @@ public class KadConfig {
     public int getMaxInboundRequests() { return maxInboundRequests; }
     public List<Multiaddr> getBootstrapNodes() { return bootstrapNodes; }
     public KadMode getMode() { return mode; }
+    public RecordValidator getValidator() { return validator; }
 
     public static Builder builder() {
         return new Builder();
@@ -108,6 +112,7 @@ public class KadConfig {
         private int maxInboundRequests = 100;
         private List<Multiaddr> bootstrapNodes = new ArrayList<>();
         private KadMode mode = KadMode.AUTO_SERVER;
+        private RecordValidator validator = RecordValidator.NOOP;
 
         private Builder() {}
 
@@ -133,6 +138,7 @@ public class KadConfig {
         public Builder maxInboundRequests(int maxInboundRequests) { this.maxInboundRequests = maxInboundRequests; return this; }
         public Builder bootstrapNodes(List<Multiaddr> bootstrapNodes) { this.bootstrapNodes = new ArrayList<>(bootstrapNodes); return this; }
         public Builder mode(KadMode mode) { this.mode = mode; return this; }
+        public Builder validator(RecordValidator validator) { this.validator = validator; return this; }
 
         public KadConfig build() {
             return new KadConfig(this);

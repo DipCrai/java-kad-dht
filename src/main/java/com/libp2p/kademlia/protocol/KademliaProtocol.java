@@ -4,12 +4,10 @@ import com.google.protobuf.ByteString;
 import com.libp2p.kademlia.pb.Dht;
 import com.libp2p.kademlia.records.Record;
 import com.libp2p.kademlia.records.RecordStore;
-import com.libp2p.kademlia.records.RecordValidator;
 import com.libp2p.kademlia.records.ProviderStore;
 import com.libp2p.kademlia.records.ProviderRecord;
 import com.libp2p.kademlia.routing.RoutingTable;
 import com.libp2p.kademlia.routing.KadPeer;
-import com.libp2p.kademlia.XorId;
 import io.libp2p.core.*;
 import io.libp2p.core.multiformats.Multiaddr;
 import io.libp2p.core.multistream.ProtocolBinding;
@@ -62,52 +60,42 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
     public void setRecordStore(RecordStore store) { this.recordStore = store; }
     public void setProviderStore(ProviderStore store) { this.providerStore = store; }
 
-    public CompletableFuture<List<KadPeer>> sendFindNode(byte[] key, PeerId peer) {
-        return sendAndParse(key, peer, RpcCodec.findNode(key), this::parseCloserPeers);
-    }
-
-    public CompletableFuture<Boolean> sendPing(PeerId peer) {
-        return sendAndParse(null, peer, RpcCodec.ping(), msg -> msg.getType() == Dht.Message.MessageType.PING);
-    }
-
-    public CompletableFuture<Boolean> sendGetValue(byte[] key, PeerId peer) {
-        return sendAndParse(key, peer, RpcCodec.getValue(key), msg -> {
-            if (msg.hasRecord() && recordStore != null) {
-                Dht.Record pbRec = msg.getRecord();
-                Record record = new Record(pbRec.getKey().toByteArray(), pbRec.getValue().toByteArray(),
-                        pbRec.hasPublisher() ? pbRec.getPublisher().toByteArray() : null,
-                        pbRec.hasTtl() && pbRec.getTtl() > 0 ? Instant.now().plusSeconds(pbRec.getTtl()) : null);
-                recordStore.put(record);
-            }
-            return msg.hasRecord();
-        });
-    }
-
-    public CompletableFuture<Boolean> sendPutValue(Record record, PeerId peer) {
-        return sendAndParse(record.getKey(), peer, RpcCodec.putValue(record), msg ->
-                msg.hasRecord() && Arrays.equals(msg.getRecord().getKey().toByteArray(), record.getKey()));
-    }
-
-    public CompletableFuture<Boolean> sendAddProvider(byte[] key, PeerId peer) {
-        return sendAndParse(key, peer, RpcCodec.addProvider(key, host.getPeerId().getBytes()), msg -> true);
-    }
-
-    public CompletableFuture<Boolean> sendGetProviders(byte[] key, PeerId peer) {
-        return sendAndParse(key, peer, RpcCodec.getProviders(key), msg -> msg.getProviderPeersCount() > 0);
-    }
-
-    private <T> CompletableFuture<T> sendAndParse(byte[] key, PeerId peer, Dht.Message req, java.util.function.Function<Dht.Message, T> parser) {
+    public CompletableFuture<Dht.Message> sendMessage(PeerId peer, Dht.Message msg) {
         return CompletableFuture.supplyAsync(() -> {
             try {
                 StreamPromise<KademliaController> promise = host.newStream(List.of(protocolName), peer);
                 KademliaController ctrl = promise.getController().get(substreamTimeout.toSeconds(), TimeUnit.SECONDS);
                 if (ctrl == null) throw new IllegalStateException("No controller");
-                Dht.Message resp = ctrl.sendRequest(req).get(substreamTimeout.toSeconds(), TimeUnit.SECONDS);
-                return parser.apply(resp);
+                return ctrl.sendRequest(msg).get(substreamTimeout.toSeconds(), TimeUnit.SECONDS);
             } catch (Exception e) {
                 throw new CompletionException(e);
             }
         });
+    }
+
+    public CompletableFuture<FindNodeResponse> sendFindNode(byte[] key, PeerId peer) {
+        return sendMessage(peer, RpcCodec.findNode(key)).thenApply(FindNodeResponse::fromMessage);
+    }
+
+    public CompletableFuture<GetValueResponse> sendGetValue(byte[] key, PeerId peer) {
+        return sendMessage(peer, RpcCodec.getValue(key)).thenApply(msg -> GetValueResponse.fromMessage(msg, recordStore));
+    }
+
+    public CompletableFuture<Boolean> sendPutValue(Record record, PeerId peer) {
+        return sendMessage(peer, RpcCodec.putValue(record)).thenApply(msg ->
+                msg.hasRecord() && Arrays.equals(msg.getRecord().getKey().toByteArray(), record.getKey()));
+    }
+
+    public CompletableFuture<Boolean> sendPing(PeerId peer) {
+        return sendMessage(peer, RpcCodec.ping()).thenApply(msg -> msg.getType() == Dht.Message.MessageType.PING);
+    }
+
+    public CompletableFuture<Boolean> sendAddProvider(byte[] key, PeerId peer) {
+        return sendMessage(peer, RpcCodec.addProvider(key, host.getPeerId().getBytes())).thenApply(msg -> true);
+    }
+
+    public CompletableFuture<GetProvidersResponse> sendGetProviders(byte[] key, PeerId peer) {
+        return sendMessage(peer, RpcCodec.getProviders(key)).thenApply(msg -> GetProvidersResponse.fromMessage(msg, providerStore));
     }
 
     Dht.Message handlePing() { return RpcCodec.pong(); }
@@ -126,9 +114,12 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
         if (recordStore != null) {
             Record record = recordStore.get(key);
             if (record != null) {
-                builder.setRecord(Dht.Record.newBuilder().setKey(ByteString.copyFrom(record.getKey()))
-                        .setValue(ByteString.copyFrom(record.getValue()))
-                        .setTimeReceived(record.getTimeReceived() != null ? record.getTimeReceived().toString() : "").build());
+                Dht.Record.Builder rb = Dht.Record.newBuilder()
+                        .setKey(ByteString.copyFrom(record.getKey()))
+                        .setValue(ByteString.copyFrom(record.getValue()));
+                if (record.getPublisher() != null) rb.setPublisher(ByteString.copyFrom(record.getPublisher()));
+                if (record.getTimeReceived() != null) rb.setTimeReceived(record.getTimeReceived().toString());
+                builder.setRecord(rb.build());
             }
         }
         for (KadPeer p : routingTable.findClosest(key, kValue)) { if (!p.nodeId.equals(requester)) builder.addCloserPeers(toProtoPeer(p)); }
@@ -142,10 +133,10 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
         byte[] key = pbRec.getKey().toByteArray();
         byte[] value = pbRec.getValue().toByteArray();
         if (recordStore != null && value.length > 0) {
-            Record record = new Record(key, value,
-                    pbRec.hasPublisher() ? pbRec.getPublisher().toByteArray() : requester.getBytes(),
-                    pbRec.hasTtl() && pbRec.getTtl() > 0 ? Instant.now().plusSeconds(pbRec.getTtl()) : null);
-            recordStore.put(record);
+            byte[] publisher = pbRec.hasPublisher() && !pbRec.getPublisher().isEmpty()
+                    ? pbRec.getPublisher().toByteArray() : requester.getBytes();
+            Instant expires = pbRec.hasTtl() && pbRec.getTtl() > 0 ? Instant.now().plusSeconds(pbRec.getTtl()) : null;
+            recordStore.put(new Record(key, value, publisher, expires));
         }
         return Dht.Message.newBuilder().setType(Dht.Message.MessageType.PUT_VALUE).setRecord(pbRec).build();
     }
@@ -170,24 +161,25 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
         Dht.Message.Builder builder = Dht.Message.newBuilder().setType(Dht.Message.MessageType.GET_PROVIDERS).setKey(ByteString.copyFrom(key));
         if (providerStore != null) {
             for (ProviderRecord pr : providerStore.getProviders(key)) {
-                Dht.Message.Peer.Builder pb = Dht.Message.Peer.newBuilder().setId(ByteString.copyFrom(pr.getProvider().getBytes())).setConnection(Dht.Message.ConnectionType.CONNECTED);
-                for (Multiaddr addr : pr.getAddresses()) pb.addAddrs(ByteString.copyFrom(addr.serialize()));
-                builder.addProviderPeers(pb);
+                builder.addProviderPeers(Dht.Message.Peer.newBuilder()
+                        .setId(ByteString.copyFrom(pr.getProvider().getBytes()))
+                        .setConnection(Dht.Message.ConnectionType.CONNECTED)
+                        .addAllAddrs(pr.getAddresses().stream().map(a -> ByteString.copyFrom(a.serialize())).toList()));
             }
         }
         for (KadPeer p : routingTable.findClosest(key, kValue)) { if (!p.nodeId.equals(requester)) builder.addCloserPeers(toProtoPeer(p)); }
         return builder.build();
     }
 
-    private Dht.Message.Peer toProtoPeer(KadPeer p) {
+    Dht.Message.Peer toProtoPeer(KadPeer p) {
         Dht.Message.Peer.Builder pb = Dht.Message.Peer.newBuilder()
-                .setId(ByteString.copyFrom(XorId.fromPeerId(p.nodeId)))
+                .setId(ByteString.copyFrom(p.nodeId.getBytes()))
                 .setConnection(Dht.Message.ConnectionType.forNumber(p.connectionType.getValue()));
         for (Multiaddr addr : p.multiaddrs) pb.addAddrs(ByteString.copyFrom(addr.serialize()));
         return pb.build();
     }
 
-    private List<KadPeer> parseCloserPeers(Dht.Message msg) {
+    List<KadPeer> parseCloserPeers(Dht.Message msg) {
         List<KadPeer> peers = new ArrayList<>();
         for (Dht.Message.Peer p : msg.getCloserPeersList()) {
             try {
@@ -198,6 +190,87 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
             } catch (Exception ignored) {}
         }
         return peers;
+    }
+
+    List<ProviderRecord> parseProviders(Dht.Message msg) {
+        List<ProviderRecord> providers = new ArrayList<>();
+        for (Dht.Message.Peer p : msg.getProviderPeersList()) {
+            try {
+                PeerId providerId = new PeerId(p.getId().toByteArray());
+                List<Multiaddr> addrs = new ArrayList<>();
+                for (ByteString ab : p.getAddrsList()) { try { addrs.add(Multiaddr.deserialize(ab.toByteArray())); } catch (Exception ignored) {} }
+                providers.add(new ProviderRecord(msg.getKey().toByteArray(), providerId, Instant.now().plus(providerRecordTTL), addrs));
+            } catch (Exception ignored) {}
+        }
+        return providers;
+    }
+
+    public record FindNodeResponse(List<KadPeer> closerPeers) {
+        public static FindNodeResponse fromMessage(Dht.Message msg) {
+            List<KadPeer> closer = new ArrayList<>();
+            for (Dht.Message.Peer p : msg.getCloserPeersList()) {
+                try {
+                    PeerId nodeId = new PeerId(p.getId().toByteArray());
+                    List<Multiaddr> addrs = new ArrayList<>();
+                    for (ByteString ab : p.getAddrsList()) { try { addrs.add(Multiaddr.deserialize(ab.toByteArray())); } catch (Exception ignored) {} }
+                    closer.add(new KadPeer(nodeId, addrs, KadPeer.ConnectionType.fromValue(p.getConnection().getNumber())));
+                } catch (Exception ignored) {}
+            }
+            return new FindNodeResponse(closer);
+        }
+    }
+
+    public record GetValueResponse(Optional<Record> record, List<KadPeer> closerPeers) {
+        public static GetValueResponse fromMessage(Dht.Message msg, RecordStore store) {
+            Optional<Record> rec = Optional.empty();
+            if (msg.hasRecord()) {
+                Dht.Record pbRec = msg.getRecord();
+                if (!pbRec.getKey().isEmpty() && !pbRec.getValue().isEmpty()) {
+                    byte[] publisher = pbRec.hasPublisher() ? pbRec.getPublisher().toByteArray() : null;
+                    Instant expires = pbRec.hasTtl() && pbRec.getTtl() > 0 ? Instant.now().plusSeconds(pbRec.getTtl()) : null;
+                    Record record = new Record(pbRec.getKey().toByteArray(), pbRec.getValue().toByteArray(), publisher, expires);
+                    if (store != null) store.put(record);
+                    rec = Optional.of(record);
+                }
+            }
+            List<KadPeer> closer = new ArrayList<>();
+            for (Dht.Message.Peer p : msg.getCloserPeersList()) {
+                try {
+                    PeerId nodeId = new PeerId(p.getId().toByteArray());
+                    List<Multiaddr> addrs = new ArrayList<>();
+                    for (ByteString ab : p.getAddrsList()) { try { addrs.add(Multiaddr.deserialize(ab.toByteArray())); } catch (Exception ignored) {} }
+                    closer.add(new KadPeer(nodeId, addrs, KadPeer.ConnectionType.fromValue(p.getConnection().getNumber())));
+                } catch (Exception ignored) {}
+            }
+            return new GetValueResponse(rec, closer);
+        }
+    }
+
+    public record GetProvidersResponse(List<ProviderRecord> providers, List<KadPeer> closerPeers) {
+        public static GetProvidersResponse fromMessage(Dht.Message msg, ProviderStore store) {
+            List<ProviderRecord> provs = new ArrayList<>();
+            for (Dht.Message.Peer p : msg.getProviderPeersList()) {
+                try {
+                    PeerId providerId = new PeerId(p.getId().toByteArray());
+                    List<Multiaddr> addrs = new ArrayList<>();
+                    for (ByteString ab : p.getAddrsList()) { try { addrs.add(Multiaddr.deserialize(ab.toByteArray())); } catch (Exception ignored) {} }
+                    ProviderRecord pr = new ProviderRecord(msg.getKey().toByteArray(), providerId,
+                            Instant.now().plus(Duration.ofHours(48)), addrs);
+                    provs.add(pr);
+                    if (store != null) store.addProvider(pr);
+                } catch (Exception ignored) {}
+            }
+            List<KadPeer> closer = new ArrayList<>();
+            for (Dht.Message.Peer p : msg.getCloserPeersList()) {
+                try {
+                    PeerId nodeId = new PeerId(p.getId().toByteArray());
+                    List<Multiaddr> addrs = new ArrayList<>();
+                    for (ByteString ab : p.getAddrsList()) { try { addrs.add(Multiaddr.deserialize(ab.toByteArray())); } catch (Exception ignored) {} }
+                    closer.add(new KadPeer(nodeId, addrs, KadPeer.ConnectionType.fromValue(p.getConnection().getNumber())));
+                } catch (Exception ignored) {}
+            }
+            return new GetProvidersResponse(provs, closer);
+        }
     }
 
     public interface KademliaController {
