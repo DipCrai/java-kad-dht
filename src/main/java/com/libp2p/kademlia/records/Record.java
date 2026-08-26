@@ -33,6 +33,12 @@ public class Record {
         this.timeReceived = timeReceived;
     }
 
+    public static Record fromWire(byte[] key, byte[] value) {
+        Record r = new Record(key, value, null, null);
+        r.timeReceived = null;
+        return r;
+    }
+
     public Record copy() {
         Record r = new Record(key, value, publisher, expires);
         r.timeReceived = this.timeReceived;

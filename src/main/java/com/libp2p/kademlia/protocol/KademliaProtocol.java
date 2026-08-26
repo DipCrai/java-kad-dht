@@ -146,8 +146,6 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
                 Dht.Record.Builder rb = Dht.Record.newBuilder()
                         .setKey(ByteString.copyFrom(wireRec.getKey()))
                         .setValue(ByteString.copyFrom(wireRec.getValue()));
-                if (record.getPublisher() != null) rb.setPublisher(ByteString.copyFrom(record.getPublisher()));
-                if (record.getTimeReceived() != null) rb.setTimeReceived(record.getTimeReceived().toString());
                 builder.setRecord(rb.build());
             }
         }
@@ -159,19 +157,18 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
         if (!req.hasRecord()) return Dht.Message.newBuilder().setType(Dht.Message.MessageType.PUT_VALUE).build();
         Dht.Record pbRec = req.getRecord();
         if (pbRec.getKey().isEmpty()) return Dht.Message.newBuilder().setType(Dht.Message.MessageType.PUT_VALUE).build();
-        byte[] msgKey = req.getKey().toByteArray();
-        byte[] recKey = pbRec.getKey().toByteArray();
-        if (!Arrays.equals(msgKey, recKey)) return Dht.Message.newBuilder().setType(Dht.Message.MessageType.PUT_VALUE).build();
-        byte[] key = recKey;
+        byte[] key = pbRec.getKey().toByteArray();
         byte[] value = pbRec.getValue().toByteArray();
         if (recordStore != null && value.length > 0) {
             if (!validator.validate(key, value)) return Dht.Message.newBuilder().setType(Dht.Message.MessageType.PUT_VALUE).build();
-            byte[] publisher = pbRec.hasPublisher() && !pbRec.getPublisher().isEmpty()
-                    ? pbRec.getPublisher().toByteArray() : requester.getBytes();
-            Instant expires = pbRec.hasTtl() && pbRec.getTtl() > 0 ? Instant.now().plusSeconds(pbRec.getTtl()) : null;
-            recordStore.put(new Record(key, value, publisher, expires));
+            Record record = Record.fromWire(key, value);
+            record.setTimeReceived(Instant.now());
+            recordStore.put(record);
         }
-        return Dht.Message.newBuilder().setType(Dht.Message.MessageType.PUT_VALUE).setRecord(pbRec).build();
+        Dht.Record echoRec = Dht.Record.newBuilder()
+                .setKey(pbRec.getKey())
+                .setValue(pbRec.getValue()).build();
+        return Dht.Message.newBuilder().setType(Dht.Message.MessageType.PUT_VALUE).setRecord(echoRec).build();
     }
 
     Dht.Message handleAddProvider(Dht.Message req, PeerId requester) {
@@ -260,11 +257,10 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
             if (msg.hasRecord()) {
                 Dht.Record pbRec = msg.getRecord();
                 if (!pbRec.getKey().isEmpty() && !pbRec.getValue().isEmpty()) {
-                    byte[] publisher = pbRec.hasPublisher() ? pbRec.getPublisher().toByteArray() : null;
-                    Instant expires = pbRec.hasTtl() && pbRec.getTtl() > 0 ? Instant.now().plusSeconds(pbRec.getTtl()) : null;
                     com.libp2p.kademlia.records.WireRecord wireRec = new com.libp2p.kademlia.records.WireRecord(
                             pbRec.getKey().toByteArray(), pbRec.getValue().toByteArray());
-                    Record record = new Record(wireRec.getKey(), wireRec.getValue(), publisher, expires);
+                    Record record = Record.fromWire(wireRec.getKey(), wireRec.getValue());
+                    record.setTimeReceived(Instant.now());
                     rec = Optional.of(record);
                 }
             }

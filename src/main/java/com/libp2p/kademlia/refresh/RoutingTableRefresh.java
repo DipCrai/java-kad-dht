@@ -51,8 +51,13 @@ public class RoutingTableRefresh {
             byte[] selfKey = XorId.fromPeerId(host.getPeerId());
             List<Integer> buckets = routingTable.getNonEmptyBucketIndices();
             for (int idx : buckets) {
-                if (idx == 0) continue;
-                byte[] randomKey = XorId.generateRandomKeyForBucket(selfKey, idx);
+                byte[] randomKey;
+                if (idx == 0) {
+                    randomKey = selfKey.clone();
+                    randomKey[0] = (byte) (randomKey[0] ^ (byte) 0x80);
+                } else {
+                    randomKey = XorId.generateRandomKeyForBucket(selfKey, idx);
+                }
                 iterativeFindNode(randomKey);
             }
         } catch (Exception ignored) {}

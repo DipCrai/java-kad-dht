@@ -7,6 +7,7 @@ import io.libp2p.core.multiformats.Multiaddr;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 
 public class RoutingTable {
@@ -15,6 +16,7 @@ public class RoutingTable {
     private volatile Host host;
     private final int k;
     private final KBucket[] buckets;
+    private volatile AdmissionCheck admissionCheck;
 
     public RoutingTable(PeerId localPeerId, int k, Duration pendingTimeout) {
         this(localPeerId, k, 256);
@@ -27,6 +29,21 @@ public class RoutingTable {
 
     public void setHost(Host host) {
         this.host = host;
+    }
+
+    public void setAdmissionCheck(AdmissionCheck check) {
+        this.admissionCheck = check;
+    }
+
+    public AdmissionCheck getAdmissionCheck() {
+        return admissionCheck;
+    }
+
+    public void setDiversityPolicy(PeerDiversityPolicy policy) {
+        for (int i = 0; i < buckets.length; i++) {
+            buckets[i].setBucketIndex(i);
+            buckets[i].setDiversityPolicy(policy);
+        }
     }
 
     public RoutingTable(PeerId localPeerId, int k, Duration pendingTimeout, int numBuckets) {
@@ -64,6 +81,18 @@ public class RoutingTable {
     public boolean insert(PeerId peerId, List<Multiaddr> addresses) {
         InsertOutcome outcome = insertOutcome(peerId, addresses);
         return outcome == InsertOutcome.INSERTED || outcome == InsertOutcome.UPDATED || outcome.needsPing();
+    }
+
+    public CompletableFuture<Boolean> insertWithAdmissionCheck(PeerId peerId, List<Multiaddr> addresses) {
+        if (admissionCheck == null || admissionCheck == AdmissionCheck.ALLOW_ALL) {
+            return CompletableFuture.completedFuture(insert(peerId, addresses));
+        }
+        return admissionCheck.checkAdmission(peerId).thenApply(admitted -> {
+            if (admitted) {
+                return insert(peerId, addresses);
+            }
+            return false;
+        });
     }
 
     public record InsertOutcome(PeerId peerToPing) {
@@ -152,6 +181,23 @@ public class RoutingTable {
         int count = 0;
         for (KBucket bucket : buckets) count += bucket.size();
         return count;
+    }
+
+    public int getRoutingTableSize() {
+        return size();
+    }
+
+    public double getAverageBucketOccupancy() {
+        int totalEntries = 0;
+        int nonEmpty = 0;
+        for (KBucket bucket : buckets) {
+            int sz = bucket.size();
+            if (sz > 0) {
+                totalEntries += sz;
+                nonEmpty++;
+            }
+        }
+        return nonEmpty == 0 ? 0.0 : (double) totalEntries / nonEmpty;
     }
 
     public int nonEmptyBuckets() {

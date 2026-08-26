@@ -1,6 +1,10 @@
 package com.libp2p.kademlia.config;
 
+import com.libp2p.kademlia.query.QueryFilter;
 import com.libp2p.kademlia.records.RecordValidator;
+import com.libp2p.kademlia.routing.AdmissionCheck;
+import com.libp2p.kademlia.routing.DefaultPeerDiversityPolicy;
+import com.libp2p.kademlia.routing.PeerDiversityPolicy;
 import io.libp2p.core.multiformats.Multiaddr;
 
 import java.time.Duration;
@@ -38,6 +42,9 @@ public class KadConfig {
     private final List<Multiaddr> bootstrapNodes;
     private final KadMode mode;
     private final RecordValidator validator;
+    private final PeerDiversityPolicy peerDiversityPolicy;
+    private final QueryFilter queryFilter;
+    private final AdmissionCheck admissionCheck;
 
     private KadConfig(Builder builder) {
         this.protocolName = builder.protocolName;
@@ -68,6 +75,9 @@ public class KadConfig {
         this.bootstrapNodes = Collections.unmodifiableList(new ArrayList<>(builder.bootstrapNodes));
         this.mode = builder.mode;
         this.validator = builder.validator;
+        this.peerDiversityPolicy = builder.peerDiversityPolicy;
+        this.queryFilter = builder.queryFilter;
+        this.admissionCheck = builder.admissionCheck;
     }
 
     public String getProtocolName() { return protocolName; }
@@ -98,6 +108,9 @@ public class KadConfig {
     public List<Multiaddr> getBootstrapNodes() { return bootstrapNodes; }
     public KadMode getMode() { return mode; }
     public RecordValidator getValidator() { return validator; }
+    public PeerDiversityPolicy getPeerDiversityPolicy() { return peerDiversityPolicy; }
+    public QueryFilter getQueryFilter() { return queryFilter; }
+    public AdmissionCheck getAdmissionCheck() { return admissionCheck; }
 
     public static Builder builder() {
         return new Builder();
@@ -133,6 +146,9 @@ public class KadConfig {
         private List<Multiaddr> bootstrapNodes = new ArrayList<>();
         private KadMode mode = KadMode.AUTO_SERVER;
         private RecordValidator validator = RecordValidator.NOOP;
+        private PeerDiversityPolicy peerDiversityPolicy = new DefaultPeerDiversityPolicy();
+        private QueryFilter queryFilter;
+        private AdmissionCheck admissionCheck = AdmissionCheck.ALLOW_ALL;
 
         private Builder() {}
 
@@ -164,6 +180,9 @@ public class KadConfig {
         public Builder bootstrapNodes(List<Multiaddr> bootstrapNodes) { this.bootstrapNodes = new ArrayList<>(bootstrapNodes); return this; }
         public Builder mode(KadMode mode) { this.mode = mode; return this; }
         public Builder validator(RecordValidator validator) { this.validator = validator; return this; }
+        public Builder peerDiversityPolicy(PeerDiversityPolicy peerDiversityPolicy) { this.peerDiversityPolicy = peerDiversityPolicy; return this; }
+        public Builder queryFilter(QueryFilter queryFilter) { this.queryFilter = queryFilter; return this; }
+        public Builder admissionCheck(AdmissionCheck admissionCheck) { this.admissionCheck = admissionCheck; return this; }
 
         public KadConfig build() {
             if (kValue <= 0) throw new IllegalArgumentException("kValue must be > 0, got " + kValue);

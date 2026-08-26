@@ -12,12 +12,20 @@ public class KBucket {
     private final int k;
     private final List<KBucketEntry> entries = new CopyOnWriteArrayList<>();
     private final List<KBucketEntry> replacementCache = new ArrayList<>();
+    private int bucketIndex;
+    private PeerDiversityPolicy diversityPolicy;
 
     public KBucket(int k) {
         this.k = k;
     }
 
+    public void setBucketIndex(int index) { this.bucketIndex = index; }
+    public void setDiversityPolicy(PeerDiversityPolicy policy) { this.diversityPolicy = policy; }
+
     public synchronized InsertResult insert(KBucketEntry entry) {
+        if (diversityPolicy != null && !diversityPolicy.accept(entry.peerId, bucketIndex)) {
+            return InsertResult.REJECTED;
+        }
         for (int i = 0; i < entries.size(); i++) {
             if (entries.get(i).peerId.equals(entry.peerId)) {
                 KBucketEntry existing = entries.remove(i);
@@ -109,6 +117,6 @@ public class KBucket {
     }
 
     public enum InsertResult {
-        INSERTED, ALREADY_PRESENT, PING
+        INSERTED, ALREADY_PRESENT, PING, REJECTED
     }
 }

@@ -40,8 +40,7 @@ public final class RpcCodec {
     public static Dht.Message putValue(WireRecord record) {
         Dht.Record pbRec = Dht.Record.newBuilder()
                 .setKey(ByteString.copyFrom(record.getKey()))
-                .setValue(ByteString.copyFrom(record.getValue()))
-                .setTimeReceived(java.time.Instant.now().toString()).build();
+                .setValue(ByteString.copyFrom(record.getValue())).build();
         return Dht.Message.newBuilder().setType(Dht.Message.MessageType.PUT_VALUE)
                 .setRecord(pbRec).setClusterLevelRaw(10).build();
     }

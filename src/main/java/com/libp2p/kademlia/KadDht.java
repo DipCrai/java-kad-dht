@@ -7,6 +7,8 @@ import com.libp2p.kademlia.lookup.QueryScheduler;
 import com.libp2p.kademlia.metrics.KadMetrics;
 import com.libp2p.kademlia.peer.PeerTracker;
 import com.libp2p.kademlia.protocol.KademliaProtocol;
+import com.libp2p.kademlia.query.DefaultQueryFilter;
+import com.libp2p.kademlia.query.QueryFilter;
 import com.libp2p.kademlia.records.MemoryRecordStore;
 import com.libp2p.kademlia.records.MemoryProviderStore;
 import com.libp2p.kademlia.records.Record;
@@ -14,6 +16,8 @@ import com.libp2p.kademlia.records.RecordStore;
 import com.libp2p.kademlia.records.RecordValidator;
 import com.libp2p.kademlia.records.ProviderStore;
 import com.libp2p.kademlia.records.ProviderRecord;
+import com.libp2p.kademlia.records.RecordReplicationManager;
+import com.libp2p.kademlia.records.ProviderReprovideManager;
 import com.libp2p.kademlia.refresh.BootstrapManager;
 import com.libp2p.kademlia.refresh.RoutingTableRefresh;
 import com.libp2p.kademlia.routing.KadPeer;
@@ -38,13 +42,13 @@ public class KadDht {
     private final IdentifyAdapter identifyAdapter;
     private final BootstrapManager bootstrapManager;
     private final RoutingTableRefresh rtRefresh;
+    private RecordReplicationManager recordReplicationManager;
+    private ProviderReprovideManager providerReprovideManager;
     private volatile Host host;
     private volatile boolean running = false;
     private final ScheduledExecutorService scheduler;
     private ScheduledFuture<?> gcTask;
-    private ScheduledFuture<?> providerRepubTask;
     private ScheduledFuture<?> recordRepubTask;
-    private ScheduledFuture<?> recordReplicationTask;
 
     public KadDht(KadConfig config) {
         this(config, null, null);
@@ -60,6 +64,7 @@ public class KadDht {
         this.metrics = new KadMetrics();
 
         this.routingTable = new RoutingTable(null, config.getKValue(), config.getPendingTimeout());
+        this.routingTable.setDiversityPolicy(config.getPeerDiversityPolicy());
         this.recordStore = recordStore != null ? recordStore : new MemoryRecordStore(config.getMaxRecords(), config.getMaxRecordValueSize(), config.getRecordMaxAge(),
                 config.getValidator() != null ? config.getValidator() : RecordValidator.NOOP);
         this.providerStore = providerStore != null ? providerStore : new MemoryProviderStore(config.getMaxProvidedKeys(), config.getMaxProvidersPerKey());
@@ -71,7 +76,7 @@ public class KadDht {
         this.protocol.setValidator(config.getValidator() != null ? config.getValidator() : RecordValidator.NOOP);
 
         this.identifyAdapter = new IdentifyAdapter(routingTable, null, config.getProtocolName());
-        this.bootstrapManager = new BootstrapManager(routingTable, null, config.getBootstrapNodes(), config.getSubstreamTimeout());
+        this.bootstrapManager = new BootstrapManager(routingTable, null, config.getBootstrapNodes(), config.getSubstreamTimeout(), config.getQueryTimeout());
         this.rtRefresh = new RoutingTableRefresh(routingTable, null, config.getBootstrapInterval(), config.getPendingTimeout());
         this.rtRefresh.setProtocol(protocol);
 
@@ -116,13 +121,6 @@ public class KadDht {
             providerStore.garbageCollect();
         }, 1, 1, TimeUnit.HOURS);
 
-        providerRepubTask = scheduler.scheduleWithFixedDelay(() -> {
-            if (!running) return;
-            for (ProviderRecord pr : providerStore.provided()) {
-                provide(pr.getKey());
-            }
-        }, config.getProviderPublicationInterval().toHours(), config.getProviderPublicationInterval().toHours(), TimeUnit.HOURS);
-
         recordRepubTask = scheduler.scheduleWithFixedDelay(() -> {
             if (!running) return;
             for (Record r : recordStore.records()) {
@@ -130,12 +128,16 @@ public class KadDht {
             }
         }, config.getRecordPublicationInterval().toHours(), config.getRecordPublicationInterval().toHours(), TimeUnit.HOURS);
 
-        recordReplicationTask = scheduler.scheduleWithFixedDelay(() -> {
-            if (!running) return;
-            for (Record r : recordStore.records()) {
-                putValue(r.getKey(), r.getValue());
-            }
-        }, config.getRecordReplicationInterval().toHours(), config.getRecordReplicationInterval().toHours(), TimeUnit.HOURS);
+        recordReplicationManager = new RecordReplicationManager(recordStore,
+                key -> putValue(key, new byte[0]),
+                config.getRecordReplicationInterval());
+        recordReplicationManager.start();
+
+        providerReprovideManager = new ProviderReprovideManager(providerStore,
+                key -> provide(key),
+                host,
+                config.getProviderPublicationInterval());
+        providerReprovideManager.start();
 
         return CompletableFuture.completedFuture(null);
     }
@@ -144,9 +146,9 @@ public class KadDht {
         running = false;
         rtRefresh.stop();
         if (gcTask != null) gcTask.cancel(false);
-        if (providerRepubTask != null) providerRepubTask.cancel(false);
         if (recordRepubTask != null) recordRepubTask.cancel(false);
-        if (recordReplicationTask != null) recordReplicationTask.cancel(false);
+        if (recordReplicationManager != null) recordReplicationManager.stop();
+        if (providerReprovideManager != null) providerReprovideManager.stop();
         scheduler.shutdownNow();
     }
 
@@ -302,6 +304,7 @@ public class KadDht {
             return runIterativeLookup(lookup);
         }
         List<CompletableFuture<IterativeLookup>> paths = new ArrayList<>();
+        java.util.Set<PeerId> excludedPeers = ConcurrentHashMap.newKeySet();
         for (int i = 0; i < disjointPaths; i++) {
             List<KadPeer> seed = getDisjointSeedPeers(target, i, disjointPaths);
             IterativeLookup lookup = new IterativeLookup(target, seed, config.getKValue(),
@@ -309,6 +312,7 @@ public class KadDht {
             if (host != null) lookup.setHost(host);
             lookup.setIdentifyAdapter(identifyAdapter);
             lookup.setLookupRoutingTable(routingTable);
+            lookup.setExcludedPeers(excludedPeers);
             paths.add(runIterativeLookup(lookup));
         }
         return CompletableFuture.allOf(paths.toArray(CompletableFuture[]::new))
@@ -358,6 +362,7 @@ public class KadDht {
             return runGetValueLookup(lookup);
         }
         List<CompletableFuture<IterativeLookup>> paths = new ArrayList<>();
+        java.util.Set<PeerId> excludedPeers2 = ConcurrentHashMap.newKeySet();
         for (int i = 0; i < disjointPaths; i++) {
             List<KadPeer> seed = getDisjointSeedPeers(target, i, disjointPaths);
             IterativeLookup lookup = new IterativeLookup(target, seed, config.getKValue(),
@@ -365,6 +370,7 @@ public class KadDht {
             if (host != null) lookup.setHost(host);
             lookup.setIdentifyAdapter(identifyAdapter);
             lookup.setLookupRoutingTable(routingTable);
+            lookup.setExcludedPeers(excludedPeers2);
             paths.add(runGetValueLookup(lookup));
         }
         return CompletableFuture.allOf(paths.toArray(CompletableFuture[]::new))
@@ -417,6 +423,7 @@ public class KadDht {
             return runGetProvidersLookup(lookup);
         }
         List<CompletableFuture<IterativeLookup>> paths = new ArrayList<>();
+        java.util.Set<PeerId> excludedPeers3 = ConcurrentHashMap.newKeySet();
         for (int i = 0; i < disjointPaths; i++) {
             List<KadPeer> seed = getDisjointSeedPeers(target, i, disjointPaths);
             IterativeLookup lookup = new IterativeLookup(target, seed, config.getKValue(),
@@ -424,6 +431,7 @@ public class KadDht {
             if (host != null) lookup.setHost(host);
             lookup.setIdentifyAdapter(identifyAdapter);
             lookup.setLookupRoutingTable(routingTable);
+            lookup.setExcludedPeers(excludedPeers3);
             paths.add(runGetProvidersLookup(lookup));
         }
         return CompletableFuture.allOf(paths.toArray(CompletableFuture[]::new))
@@ -458,21 +466,27 @@ public class KadDht {
                 });
     }
 
+    private QueryFilter resolveQueryFilter() {
+        QueryFilter filter = config.getQueryFilter();
+        if (filter == null) filter = new DefaultQueryFilter(identifyAdapter);
+        return filter;
+    }
+
     private CompletableFuture<IterativeLookup> runIterativeLookup(IterativeLookup lookup) {
         java.util.concurrent.atomic.AtomicReference<QueryScheduler> qsRef = new java.util.concurrent.atomic.AtomicReference<>();
         QueryScheduler qs = new QueryScheduler(config.getAlphaValue(), lookup, next -> {
-            return CompletableFuture.runAsync(() -> {
-                try {
-                    var result = protocol.sendFindNode(lookup.getTarget(), next).get(
-                            config.getSubstreamTimeout().toSeconds(), TimeUnit.SECONDS);
-                    lookup.onResponse(next, result.closerPeers());
-                    QueryScheduler q = qsRef.get();
-                    if (q != null) q.submitPeers(lookup.drainNewlyHeard());
-                } catch (Exception e) {
-                    lookup.onFailure(next);
-                }
-            }, scheduler);
+            return protocol.sendFindNode(lookup.getTarget(), next)
+                    .thenAccept(result -> {
+                        lookup.onResponse(next, result.closerPeers());
+                        QueryScheduler q = qsRef.get();
+                        if (q != null) q.submitPeers(lookup.drainNewlyHeard());
+                    })
+                    .exceptionally(ex -> {
+                        lookup.onFailure(next);
+                        return null;
+                    });
         }, config.getQueryTimeout(), scheduler);
+        qs.setQueryFilter(resolveQueryFilter());
         qsRef.set(qs);
         List<PeerId> initialPeers = new ArrayList<>();
         for (IterativeLookup.PeerEntry pe : lookup.getAllPeerEntries()) {
@@ -486,14 +500,9 @@ public class KadDht {
 
     private CompletableFuture<IterativeLookup> runGetValueLookup(IterativeLookup lookup) {
         QueryScheduler qs = new QueryScheduler(config.getAlphaValue(), lookup, next -> {
-            return CompletableFuture.runAsync(() -> {
-                try {
-                    lookup.queryGetValue(next);
-                } catch (Exception e) {
-                    lookup.onFailure(next);
-                }
-            }, scheduler);
+            return lookup.queryGetValue(next).thenApply(r -> null);
         }, config.getQueryTimeout(), scheduler);
+        qs.setQueryFilter(resolveQueryFilter());
         List<PeerId> initialPeers = new ArrayList<>();
         for (IterativeLookup.PeerEntry pe : lookup.getAllPeerEntries()) {
             if (pe.getState() == IterativeLookup.PeerStateInner.NOT_CONTACTED) {
@@ -506,14 +515,9 @@ public class KadDht {
 
     private CompletableFuture<IterativeLookup> runGetProvidersLookup(IterativeLookup lookup) {
         QueryScheduler qs = new QueryScheduler(config.getAlphaValue(), lookup, next -> {
-            return CompletableFuture.runAsync(() -> {
-                try {
-                    lookup.queryGetProviders(next);
-                } catch (Exception e) {
-                    lookup.onFailure(next);
-                }
-            }, scheduler);
+            return lookup.queryGetProviders(next).thenApply(r -> null);
         }, config.getQueryTimeout(), scheduler);
+        qs.setQueryFilter(resolveQueryFilter());
         List<PeerId> initialPeers = new ArrayList<>();
         for (IterativeLookup.PeerEntry pe : lookup.getAllPeerEntries()) {
             if (pe.getState() == IterativeLookup.PeerStateInner.NOT_CONTACTED) {

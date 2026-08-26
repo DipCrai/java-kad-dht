@@ -16,14 +16,16 @@ public class BootstrapManager {
     private volatile Host host;
     private final List<Multiaddr> bootstrapNodes;
     private final Duration connectTimeout;
+    private final Duration queryTimeout;
     private volatile boolean bootstrapped = false;
     private volatile java.util.function.Function<byte[], CompletableFuture<Void>> findNodeFn;
 
-    public BootstrapManager(RoutingTable routingTable, Host host, List<Multiaddr> bootstrapNodes, Duration connectTimeout) {
+    public BootstrapManager(RoutingTable routingTable, Host host, List<Multiaddr> bootstrapNodes, Duration connectTimeout, Duration queryTimeout) {
         this.routingTable = routingTable;
         this.host = host;
         this.bootstrapNodes = bootstrapNodes;
         this.connectTimeout = connectTimeout;
+        this.queryTimeout = queryTimeout;
     }
 
     public void setHost(Host host) { this.host = host; }
@@ -32,10 +34,14 @@ public class BootstrapManager {
     public CompletableFuture<Void> bootstrap() {
         if (bootstrapped) return CompletableFuture.completedFuture(null);
         bootstrapped = true;
-        return connectBootstrapNodes()
+        CompletableFuture<Void> chain = connectBootstrapNodes()
                 .thenCompose(v -> selfLookup())
                 .thenCompose(v -> refreshBuckets())
                 .thenApply(v -> null);
+        if (queryTimeout != null) {
+            chain = chain.orTimeout(queryTimeout.toMillis(), TimeUnit.MILLISECONDS);
+        }
+        return chain;
     }
 
     private CompletableFuture<Void> connectBootstrapNodes() {
@@ -79,91 +85,7 @@ public class BootstrapManager {
     }
 
     private CompletableFuture<Void> iterativeFindNode(byte[] target) {
-        if (findNodeFn != null) return findNodeFn.apply(target);
-        return CompletableFuture.supplyAsync(() -> {
-            List<KadPeer> active = getActivePeers();
-            if (active.isEmpty()) return null;
-
-            Set<PeerId> queried = ConcurrentHashMap.newKeySet();
-            List<KadPeer> candidates = new ArrayList<>(active);
-            int noProgress = 0;
-
-            while (noProgress < 3) {
-                List<PeerId> toQuery = new ArrayList<>();
-                for (KadPeer p : candidates) {
-                    if (!queried.contains(p.nodeId) && toQuery.size() < 3) {
-                        toQuery.add(p.nodeId);
-                        queried.add(p.nodeId);
-                    }
-                }
-                if (toQuery.isEmpty()) break;
-
-                List<CompletableFuture<List<KadPeer>>> futures = new ArrayList<>();
-                for (PeerId peer : toQuery) {
-                    futures.add(CompletableFuture.supplyAsync(() -> {
-                        try {
-                            var msg = com.libp2p.kademlia.protocol.RpcCodec.findNode(target);
-                            var ctrl = (com.libp2p.kademlia.protocol.KademliaProtocol.KademliaController) host.newStream(List.of("/ipfs/kad/1.0.0"), peer)
-                                    .getController().get(connectTimeout.toSeconds(), TimeUnit.SECONDS);
-                            var resp = ctrl.sendRequest(msg)
-                                    .get(connectTimeout.toSeconds(), TimeUnit.SECONDS);
-                            return parseCloserPeers(resp);
-                        } catch (Exception e) {
-                            return List.<KadPeer>of();
-                        }
-                    }));
-                }
-
-                boolean progress = false;
-                for (CompletableFuture<List<KadPeer>> f : futures) {
-                    try {
-                        List<KadPeer> closer = f.get(connectTimeout.toSeconds(), TimeUnit.SECONDS);
-                        for (KadPeer p : closer) {
-                            if (!containsPeer(candidates, p.nodeId)) {
-                                candidates.add(p);
-                                routingTable.insert(p.nodeId, p.multiaddrs);
-                                progress = true;
-                            }
-                        }
-                    } catch (Exception ignored) {}
-                }
-                noProgress = progress ? 0 : noProgress + 1;
-            }
-            return null;
-        }, Executors.newSingleThreadExecutor(r -> {
-            Thread t = new Thread(r, "bootstrap");
-            t.setDaemon(true);
-            return t;
-        }));
-    }
-
-    private List<KadPeer> getActivePeers() {
-        List<KadPeer> peers = new ArrayList<>();
-        for (PeerId peer : routingTable.getAllPeers()) {
-            List<Multiaddr> addrs;
-            try { addrs = new ArrayList<>(host.getAddressBook().getAddrs(peer).get(2, TimeUnit.SECONDS)); }
-            catch (Exception e) { addrs = List.of(); }
-            peers.add(new KadPeer(peer, addrs, KadPeer.ConnectionType.CONNECTED));
-        }
-        return peers;
-    }
-
-    private boolean containsPeer(List<KadPeer> peers, PeerId id) {
-        return peers.stream().anyMatch(p -> p.nodeId.equals(id));
-    }
-
-    private List<KadPeer> parseCloserPeers(com.libp2p.kademlia.pb.Dht.Message msg) {
-        List<KadPeer> peers = new ArrayList<>();
-        for (var p : msg.getCloserPeersList()) {
-            try {
-                PeerId nodeId = new PeerId(p.getId().toByteArray());
-                List<Multiaddr> addrs = new ArrayList<>();
-                for (var ab : p.getAddrsList()) {
-                    try { addrs.add(Multiaddr.deserialize(ab.toByteArray())); } catch (Exception ignored) {}
-                }
-                peers.add(new KadPeer(nodeId, addrs, KadPeer.ConnectionType.fromValue(p.getConnection().getNumber())));
-            } catch (Exception ignored) {}
-        }
-        return peers;
+        if (findNodeFn == null) throw new IllegalStateException("findNodeFn not set");
+        return findNodeFn.apply(target);
     }
 }
