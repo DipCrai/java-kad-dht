@@ -1,0 +1,11 @@
+.gradle/
+build/
+gradlew
+gradlew.bat
+*.class
+*.jar
+*.log
+.idea/
+*.iml
+out/
+AGENTS.md
