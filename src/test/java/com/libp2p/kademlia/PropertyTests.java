@@ -126,7 +126,7 @@ class PropertyTests {
     @RepeatedTest(100)
     void testXorIdFromPeerIdRoundtrip() {
         byte[] original = randomKey();
-        PeerId peerId = XorId.toPeerId(original);
+        PeerId peerId = XorId.peerIdFromRawBytes(original);
         byte[] recovered = XorId.fromPeerId(peerId);
         assertArrayEquals(XorId.sha256(original), recovered);
     }

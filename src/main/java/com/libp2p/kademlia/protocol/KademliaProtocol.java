@@ -426,6 +426,7 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
                                 if ((b & 0x80) == 0) done = true; shift += 7;
                             }
                             if (!done) continue;
+                            if (result > 16384) { ctx.fireExceptionCaught(new IllegalStateException("Frame too large")); return; }
                             expectedLength = (int) result;
                             if (expectedLength > 16384) { ctx.fireExceptionCaught(new IllegalStateException("Frame too large")); return; }
                         } else {

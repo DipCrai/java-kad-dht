@@ -20,7 +20,7 @@ public class XorId {
         return sha256(rawKey);
     }
 
-    public static PeerId toPeerId(byte[] key) {
+    public static PeerId peerIdFromRawBytes(byte[] key) {
         return new PeerId(key);
     }
 

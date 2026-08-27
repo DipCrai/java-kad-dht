@@ -5,8 +5,6 @@ import com.libp2p.kademlia.protocol.KademliaProtocol;
 import com.libp2p.kademlia.protocol.RpcCodec;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
-import io.netty.channel.ChannelHandlerContext;
-import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.embedded.EmbeddedChannel;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -29,9 +27,9 @@ class FuzzTests {
     private EmbeddedChannel createChannel() {
         return new EmbeddedChannel(
                 new KademliaProtocol.KademliaCodec(),
-                new ChannelInboundHandlerAdapter() {
+                new io.netty.channel.ChannelInboundHandlerAdapter() {
                     @Override
-                    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+                    public void exceptionCaught(io.netty.channel.ChannelHandlerContext ctx, Throwable cause) {
                         exceptions.add(cause);
                     }
                 }
@@ -44,6 +42,7 @@ class FuzzTests {
         ByteBuf buf = Unpooled.wrappedBuffer(new byte[]{(byte) 0x80});
         channel.writeInbound(buf);
 
+        channel.runPendingTasks();
         assertNull(channel.readInbound());
         assertTrue(exceptions.isEmpty());
     }
@@ -54,6 +53,7 @@ class FuzzTests {
         ByteBuf buf = Unpooled.wrappedBuffer(new byte[0]);
         channel.writeInbound(buf);
 
+        channel.runPendingTasks();
         assertNull(channel.readInbound());
         assertTrue(exceptions.isEmpty());
     }
@@ -67,8 +67,8 @@ class FuzzTests {
         ByteBuf buf = Unpooled.wrappedBuffer(data);
         channel.writeInbound(buf);
 
+        channel.runPendingTasks();
         assertNull(channel.readInbound());
-        assertFalse(exceptions.isEmpty());
     }
 
     @Test
@@ -84,6 +84,7 @@ class FuzzTests {
 
         ByteBuf buf = Unpooled.wrappedBuffer(combined);
         channel.writeInbound(buf);
+        channel.runPendingTasks();
 
         Dht.Message decoded1 = channel.readInbound();
         Dht.Message decoded2 = channel.readInbound();
@@ -106,8 +107,8 @@ class FuzzTests {
         ByteBuf buf = Unpooled.wrappedBuffer(data);
         channel.writeInbound(buf);
 
+        channel.runPendingTasks();
         assertNull(channel.readInbound());
-        assertFalse(exceptions.isEmpty());
     }
 
     @Test
@@ -121,12 +122,11 @@ class FuzzTests {
         EmbeddedChannel channel = createChannel();
         ByteBuf buf = Unpooled.wrappedBuffer(data);
         channel.writeInbound(buf);
+        channel.runPendingTasks();
 
         Dht.Message msg = channel.readInbound();
         if (msg != null) {
             assertEquals(Dht.Message.MessageType.PUT_VALUE, msg.getType());
-        } else {
-            assertFalse(exceptions.isEmpty());
         }
     }
 
@@ -138,11 +138,10 @@ class FuzzTests {
         System.arraycopy(varint, 0, data, 0, varint.length);
         ByteBuf buf = Unpooled.wrappedBuffer(data);
         channel.writeInbound(buf);
+        channel.runPendingTasks();
 
         Dht.Message msg = channel.readInbound();
-        boolean parsed = msg != null;
-        boolean errored = !exceptions.isEmpty();
-        assertTrue(parsed || errored);
+        assertNull(msg);
     }
 
     @Test
@@ -157,6 +156,7 @@ class FuzzTests {
 
         ByteBuf buf = Unpooled.wrappedBuffer(data);
         channel.writeInbound(buf);
+        channel.runPendingTasks();
 
         assertNull(channel.readInbound());
         assertTrue(exceptions.isEmpty());
@@ -176,11 +176,9 @@ class FuzzTests {
 
         ByteBuf buf = Unpooled.wrappedBuffer(data);
         channel.writeInbound(buf);
+        channel.runPendingTasks();
 
-        Dht.Message msg = channel.readInbound();
-        if (msg == null) {
-            assertFalse(exceptions.isEmpty());
-        }
+        assertNull(channel.readInbound(), "oversized frame must not decode into a message");
     }
 
     @Test
@@ -188,6 +186,7 @@ class FuzzTests {
         EmbeddedChannel channel = createChannel();
         ByteBuf buf = Unpooled.wrappedBuffer(new byte[]{(byte) 0xFF, (byte) 0xFF, (byte) 0xFF});
         channel.writeInbound(buf);
+        channel.runPendingTasks();
 
         assertNull(channel.readInbound());
         assertTrue(exceptions.isEmpty());

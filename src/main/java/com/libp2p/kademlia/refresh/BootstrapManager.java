@@ -72,7 +72,8 @@ public class BootstrapManager {
                     futures.add(host.newStream(List.of("/ipfs/ping/1.0.0"), peerId)
                             .getController()
                             .orTimeout(connectTimeout.toMillis(), TimeUnit.MILLISECONDS)
-                            .thenAccept(ctrl -> routingTable.markSeen(peerId))
+                            .thenCompose(ctrl -> kadSupported(peerId))
+                            .thenAccept(ok -> { if (ok) routingTable.markSeen(peerId); })
                             .exceptionally(ex -> null));
                 }
             } catch (Exception ignored) {}
@@ -97,6 +98,13 @@ public class BootstrapManager {
             }
         }
         return CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new));
+    }
+
+    private CompletableFuture<Boolean> kadSupported(PeerId peerId) {
+        if (findNodeFn == null) return CompletableFuture.completedFuture(true);
+        return findNodeFn.apply(XorId.fromPeerId(peerId))
+                .thenApply(v -> true)
+                .exceptionally(ex -> false);
     }
 
     private CompletableFuture<Void> iterativeFindNode(byte[] target) {

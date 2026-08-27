@@ -218,9 +218,12 @@ public class KadDht {
                     int successfulPeers = result.getQueriedPeers().size();
                     int quorum = config.getReadQuorum();
 
+                    List<Record> localRecords = recordStore.getAll(key);
+                    boolean localValueFound = !localRecords.isEmpty();
+
                     List<Record> collected = new ArrayList<>(result.getCandidateRecords());
 
-                    for (Record local : recordStore.getAll(key)) {
+                    for (Record local : localRecords) {
                         if (!collected.stream().anyMatch(r -> Arrays.equals(r.getKey(), key) && Arrays.equals(r.getValue(), local.getValue()))) {
                             collected.add(local);
                         }
@@ -232,25 +235,24 @@ public class KadDht {
                     }
 
                     if (collected.isEmpty()) return CompletableFuture.completedFuture(null);
-                    if (successfulPeers < quorum && collected.size() == 1) {
+
+                    int effectiveSources = successfulPeers + (localValueFound ? 1 : 0);
+                    if (collected.size() < quorum && effectiveSources < quorum) {
                         return CompletableFuture.completedFuture(null);
                     }
 
                     Record best = selectBestRecord(collected);
 
-                    List<KadPeer> stalePeers = new ArrayList<>();
                     Map<PeerId, Record> peerRecords = result.getPeerRecords();
-                    for (KadPeer p : result.getQueriedPeers()) {
-                        if (!routingTable.getAllPeers().contains(p.nodeId)) continue;
+                    List<KadPeer> stalePeers = new ArrayList<>();
+                    for (KadPeer p : result.getClosestPeers()) {
                         Record peerRec = peerRecords.get(p.nodeId);
                         boolean peerHadValue = peerRec != null && Arrays.equals(peerRec.getValue(), best.getValue());
                         if (!peerHadValue) stalePeers.add(p);
                     }
 
-                    if (!stalePeers.isEmpty()) {
-                        for (KadPeer p : stalePeers) {
-                            protocol.sendPutValue(best, p.nodeId);
-                        }
+                    for (KadPeer p : stalePeers) {
+                        protocol.sendPutValue(best, p.nodeId);
                     }
 
                     return CompletableFuture.completedFuture(best);
@@ -546,6 +548,7 @@ public class KadDht {
     }
 
     private CompletableFuture<IterativeLookup> runGetValueLookup(IterativeLookup lookup) {
+        lookup.setValidator(config.getValidator());
         QueryScheduler qs = new QueryScheduler(config.getAlphaValue(), lookup, next -> {
             return lookup.queryGetValue(next).thenApply(r -> null);
         }, config.getQueryTimeout(), scheduler, config.getMaxConcurrentQueries());

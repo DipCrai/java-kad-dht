@@ -35,11 +35,11 @@ public class PeerSelector {
         candidates.sort(Comparator.comparingInt(a -> {
             byte[] dist = XorId.distance(a.nodeId, routingTable.getLocalPeerId());
             return Integer.compareUnsigned(bytesToInt(dist), bytesToInt(XorId.distance(
-                    XorId.toPeerId(targetKey), routingTable.getLocalPeerId())));
+                    XorId.peerIdFromRawBytes(targetKey), routingTable.getLocalPeerId())));
         }));
 
         return candidates.stream()
-                .sorted(Comparator.comparing(a -> XorId.toHex(XorId.distance(a.nodeId, XorId.toPeerId(targetKey)))))
+                .sorted(Comparator.comparing(a -> XorId.toHex(XorId.distance(a.nodeId, XorId.peerIdFromRawBytes(targetKey)))))
                 .limit(count)
                 .collect(Collectors.toList());
     }

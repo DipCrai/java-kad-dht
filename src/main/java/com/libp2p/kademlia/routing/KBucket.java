@@ -111,7 +111,7 @@ public class KBucket {
     public int size() { return entries.size(); }
     public boolean isFull() { return entries.size() >= k; }
 
-    public Optional<KBucketEntry> getOldest() {
+    public synchronized Optional<KBucketEntry> getOldest() {
         return entries.isEmpty() ? Optional.empty() : Optional.of(entries.get(entries.size() - 1));
     }
 

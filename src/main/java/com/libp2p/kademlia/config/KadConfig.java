@@ -216,6 +216,7 @@ public class KadConfig {
             if (recordReplicationInterval == null || recordReplicationInterval.isNegative() || recordReplicationInterval.isZero()) throw new IllegalArgumentException("recordReplicationInterval must be positive");
             if (recordPublicationInterval == null || recordPublicationInterval.isNegative() || recordPublicationInterval.isZero()) throw new IllegalArgumentException("recordPublicationInterval must be positive");
             if (providerPublicationInterval == null || providerPublicationInterval.isNegative() || providerPublicationInterval.isZero()) throw new IllegalArgumentException("providerPublicationInterval must be positive");
+            if (disjointPaths < 1) throw new IllegalArgumentException("disjointPaths must be >= 1, got " + disjointPaths);
             return new KadConfig(this);
         }
     }
