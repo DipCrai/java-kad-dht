@@ -4,7 +4,6 @@ import io.libp2p.core.PeerId;
 
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.util.Arrays;
 
 public class XorId {
     public static final int KEY_LENGTH = 32;
@@ -14,14 +13,11 @@ public class XorId {
     }
 
     public static byte[] fromPeerId(PeerId peerId) {
-        byte[] raw = peerId.getBytes();
-        if (raw.length == KEY_LENGTH) return raw;
-        if (raw.length > KEY_LENGTH) {
-            return Arrays.copyOfRange(raw, raw.length - KEY_LENGTH, raw.length);
-        }
-        byte[] padded = new byte[KEY_LENGTH];
-        System.arraycopy(raw, 0, padded, KEY_LENGTH - raw.length, raw.length);
-        return padded;
+        return sha256(peerId.getBytes());
+    }
+
+    public static byte[] fromKey(byte[] rawKey) {
+        return sha256(rawKey);
     }
 
     public static PeerId toPeerId(byte[] key) {

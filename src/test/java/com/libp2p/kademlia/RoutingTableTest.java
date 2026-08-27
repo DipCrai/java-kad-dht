@@ -70,19 +70,26 @@ class RoutingTableTest {
     @Test
     void testInsertOutcome() {
         byte[] localKey = XorId.fromPeerId(localPeer);
-        byte[] targetKey = XorId.generateRandomKeyForBucket(localKey, 10);
+        java.util.Random rng = new java.util.Random(42);
         for (int i = 0; i < K; i++) {
-            byte[] variation = targetKey.clone();
-            variation[XorId.KEY_LENGTH - 1] = (byte) i;
-            rt.insertOutcome(new PeerId(variation), List.of());
+            rt.insertOutcome(randomPeerInBucket(localKey, 0, rng), List.of());
         }
         assertEquals(K, rt.size());
-        byte[] extraKey = targetKey.clone();
-        extraKey[XorId.KEY_LENGTH - 1] = (byte) K;
-        PeerId extraPeer = new PeerId(extraKey);
+        PeerId extraPeer = randomPeerInBucket(localKey, 0, rng);
         RoutingTable.InsertOutcome outcome = rt.insertOutcome(extraPeer, List.of());
         assertTrue(outcome.needsPing(), "inserting into full bucket should need ping");
         assertNotNull(outcome.peerToPing());
+    }
+
+    private PeerId randomPeerInBucket(byte[] localKey, int bucket, java.util.Random rng) {
+        byte[] raw = new byte[XorId.KEY_LENGTH];
+        while (true) {
+            rng.nextBytes(raw);
+            PeerId peer = new PeerId(raw);
+            if (XorId.bucketIndex(localKey, XorId.fromPeerId(peer)) == bucket) {
+                return peer;
+            }
+        }
     }
 
     @Test

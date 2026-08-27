@@ -35,9 +35,9 @@ class RecordReplicationManagerTest {
         List<byte[]> capturedValues = new CopyOnWriteArrayList<>();
 
         manager = new RecordReplicationManager(store,
-                (k, v) -> {
-                    capturedKeys.add(k.clone());
-                    capturedValues.add(v.clone());
+                r -> {
+                    capturedKeys.add(r.getKey());
+                    capturedValues.add(r.getValue());
                     return CompletableFuture.completedFuture(true);
                 },
                 Duration.ofMillis(1));
@@ -62,8 +62,8 @@ class RecordReplicationManagerTest {
         List<byte[]> capturedValues = new CopyOnWriteArrayList<>();
 
         manager = new RecordReplicationManager(store,
-                (k, v) -> {
-                    capturedValues.add(v.clone());
+                r -> {
+                    capturedValues.add(r.getValue());
                     return CompletableFuture.completedFuture(true);
                 },
                 Duration.ofMillis(1));
@@ -92,8 +92,8 @@ class RecordReplicationManagerTest {
         List<byte[]> capturedValues = new CopyOnWriteArrayList<>();
 
         manager = new RecordReplicationManager(store,
-                (k, v) -> {
-                    capturedValues.add(v.clone());
+                r -> {
+                    capturedValues.add(r.getValue());
                     return CompletableFuture.completedFuture(true);
                 },
                 Duration.ofMillis(1));

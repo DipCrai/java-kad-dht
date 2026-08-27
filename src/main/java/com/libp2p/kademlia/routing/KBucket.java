@@ -23,9 +23,6 @@ public class KBucket {
     public void setDiversityPolicy(PeerDiversityPolicy policy) { this.diversityPolicy = policy; }
 
     public synchronized InsertResult insert(KBucketEntry entry) {
-        if (diversityPolicy != null && !diversityPolicy.accept(entry.peerId, bucketIndex)) {
-            return InsertResult.REJECTED;
-        }
         for (int i = 0; i < entries.size(); i++) {
             if (entries.get(i).peerId.equals(entry.peerId)) {
                 KBucketEntry existing = entries.remove(i);
@@ -34,14 +31,24 @@ public class KBucket {
                 return InsertResult.ALREADY_PRESENT;
             }
         }
+        for (int i = 0; i < replacementCache.size(); i++) {
+            if (replacementCache.get(i).peerId.equals(entry.peerId)) {
+                KBucketEntry existing = replacementCache.remove(i);
+                replacementCache.add(0, existing);
+                return InsertResult.PING;
+            }
+        }
+        if (diversityPolicy != null && !diversityPolicy.accept(entry.peerId, bucketIndex)) {
+            return InsertResult.REJECTED;
+        }
 
         if (entries.size() < k) {
             entries.add(0, entry);
             return InsertResult.INSERTED;
         }
 
-        replacementCache.remove(entry);
         if (replacementCache.size() >= k) {
+            if (diversityPolicy != null) diversityPolicy.remove(replacementCache.get(replacementCache.size() - 1).peerId, bucketIndex);
             replacementCache.remove(replacementCache.size() - 1);
         }
         replacementCache.add(0, entry);
@@ -52,6 +59,7 @@ public class KBucket {
         for (int i = 0; i < entries.size(); i++) {
             if (entries.get(i).peerId.equals(peerId)) {
                 KBucketEntry removed = entries.remove(i);
+                if (diversityPolicy != null) diversityPolicy.remove(peerId, bucketIndex);
                 if (!replacementCache.isEmpty()) {
                     entries.add(replacementCache.remove(0));
                 }
@@ -65,6 +73,7 @@ public class KBucket {
         for (int i = 0; i < entries.size(); i++) {
             if (entries.get(i).peerId.equals(evicted)) {
                 entries.remove(i);
+                if (diversityPolicy != null) diversityPolicy.remove(evicted, bucketIndex);
                 if (!replacementCache.isEmpty()) {
                     entries.add(replacementCache.remove(0));
                 }
@@ -109,6 +118,7 @@ public class KBucket {
     public synchronized boolean discardPending(PeerId pendingPeerId) {
         for (int i = 0; i < replacementCache.size(); i++) {
             if (replacementCache.get(i).peerId.equals(pendingPeerId)) {
+                if (diversityPolicy != null) diversityPolicy.remove(pendingPeerId, bucketIndex);
                 replacementCache.remove(i);
                 return true;
             }

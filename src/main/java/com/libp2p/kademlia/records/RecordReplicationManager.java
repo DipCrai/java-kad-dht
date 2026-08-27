@@ -2,21 +2,21 @@ package com.libp2p.kademlia.records;
 
 import java.time.Duration;
 import java.util.concurrent.*;
-import java.util.function.BiFunction;
+import java.util.function.Function;
 
 public class RecordReplicationManager {
     private final RecordStore recordStore;
-    private final BiFunction<byte[], byte[], CompletableFuture<Boolean>> putValueFn;
+    private final Function<Record, CompletableFuture<Boolean>> replicateFn;
     private final Duration replicationInterval;
     private ScheduledExecutorService scheduler;
     private ScheduledFuture<?> task;
     private volatile boolean running;
 
     public RecordReplicationManager(RecordStore recordStore,
-                                     BiFunction<byte[], byte[], CompletableFuture<Boolean>> putValueFn,
+                                     Function<Record, CompletableFuture<Boolean>> replicateFn,
                                      Duration replicationInterval) {
         this.recordStore = recordStore;
-        this.putValueFn = putValueFn;
+        this.replicateFn = replicateFn;
         this.replicationInterval = replicationInterval;
     }
 
@@ -41,7 +41,7 @@ public class RecordReplicationManager {
     private void replicate() {
         if (!running) return;
         for (Record r : recordStore.records()) {
-            putValueFn.apply(r.getKey(), r.getValue());
+            replicateFn.apply(r);
         }
     }
 }

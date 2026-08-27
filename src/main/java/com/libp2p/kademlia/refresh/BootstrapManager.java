@@ -18,8 +18,11 @@ public class BootstrapManager {
     private final Duration connectTimeout;
     private final Duration queryTimeout;
     private final long bootstrapAddressTTL;
-    private volatile boolean bootstrapped = false;
+    private volatile BootstrapState state = BootstrapState.NOT_STARTED;
+    private volatile CompletableFuture<Void> bootstrapFuture;
     private volatile java.util.function.Function<byte[], CompletableFuture<Void>> findNodeFn;
+
+    public enum BootstrapState { NOT_STARTED, RUNNING, SUCCEEDED, FAILED }
 
     public BootstrapManager(RoutingTable routingTable, Host host, List<Multiaddr> bootstrapNodes, Duration connectTimeout, Duration queryTimeout, long bootstrapAddressTTL) {
         this.routingTable = routingTable;
@@ -34,8 +37,13 @@ public class BootstrapManager {
     public void setFindNodeFn(java.util.function.Function<byte[], CompletableFuture<Void>> fn) { this.findNodeFn = fn; }
 
     public CompletableFuture<Void> bootstrap() {
-        if (bootstrapped) return CompletableFuture.completedFuture(null);
-        bootstrapped = true;
+        if (state == BootstrapState.RUNNING && bootstrapFuture != null) {
+            return bootstrapFuture;
+        }
+        if (state == BootstrapState.SUCCEEDED) {
+            return CompletableFuture.completedFuture(null);
+        }
+        state = BootstrapState.RUNNING;
         CompletableFuture<Void> chain = connectBootstrapNodes()
                 .thenCompose(v -> selfLookup())
                 .thenCompose(v -> refreshBuckets())
@@ -43,7 +51,11 @@ public class BootstrapManager {
         if (queryTimeout != null) {
             chain = chain.orTimeout(queryTimeout.toMillis(), TimeUnit.MILLISECONDS);
         }
-        return chain;
+        bootstrapFuture = chain.whenComplete((v, ex) -> {
+            state = ex == null ? BootstrapState.SUCCEEDED : BootstrapState.FAILED;
+            bootstrapFuture = null;
+        });
+        return bootstrapFuture;
     }
 
     private CompletableFuture<Void> connectBootstrapNodes() {

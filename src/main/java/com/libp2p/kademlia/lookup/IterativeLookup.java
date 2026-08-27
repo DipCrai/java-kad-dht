@@ -15,6 +15,7 @@ import java.util.concurrent.*;
 
 public class IterativeLookup {
     private final byte[] target;
+    private final byte[] wireTarget;
     private final int k;
     private final int alpha;
     private final int beta;
@@ -36,9 +37,10 @@ public class IterativeLookup {
     private volatile java.util.Set<PeerId> excludedPeers;
     private long peerAddressTTLSeconds = 1800;
 
-    public IterativeLookup(byte[] target, List<KadPeer> seedPeers, int k, int alpha, int beta,
+    public IterativeLookup(byte[] target, byte[] wireTarget, List<KadPeer> seedPeers, int k, int alpha, int beta,
                            Duration peerTimeout, KademliaProtocol protocol, int quorum) {
         this.target = target;
+        this.wireTarget = wireTarget;
         this.k = k;
         this.alpha = alpha;
         this.beta = beta;
@@ -49,8 +51,18 @@ public class IterativeLookup {
     }
 
     public IterativeLookup(byte[] target, List<KadPeer> seedPeers, int k, int alpha, int beta,
+                           Duration peerTimeout, KademliaProtocol protocol, int quorum) {
+        this(target, target, seedPeers, k, alpha, beta, peerTimeout, protocol, quorum);
+    }
+
+    public IterativeLookup(byte[] target, byte[] wireTarget, List<KadPeer> seedPeers, int k, int alpha, int beta,
                            Duration peerTimeout, KademliaProtocol protocol) {
-        this(target, seedPeers, k, alpha, beta, peerTimeout, protocol, 0);
+        this(target, wireTarget, seedPeers, k, alpha, beta, peerTimeout, protocol, 0);
+    }
+
+    public IterativeLookup(byte[] target, List<KadPeer> seedPeers, int k, int alpha, int beta,
+                           Duration peerTimeout, KademliaProtocol protocol) {
+        this(target, target, seedPeers, k, alpha, beta, peerTimeout, protocol, 0);
     }
 
     public PeerId next() {
@@ -79,7 +91,7 @@ public class IterativeLookup {
     public CompletableFuture<FindNodeResult> queryNext() {
         PeerId next = next();
         if (next == null) return CompletableFuture.completedFuture(new FindNodeResult(List.of(), List.of()));
-        return protocol.sendFindNode(target, next)
+        return protocol.sendFindNode(wireTarget, next)
                 .thenApply(resp -> {
                     markSucceeded(next);
                     PeerEntry nextEntry = find(next);
@@ -102,7 +114,7 @@ public class IterativeLookup {
 
     public CompletableFuture<GetValueResult> queryGetValue(PeerId peer) {
         if (peer == null) return CompletableFuture.completedFuture(new GetValueResult(null, List.of(), List.of()));
-        return protocol.sendGetValue(target, peer)
+        return protocol.sendGetValue(wireTarget, peer)
                 .thenApply(resp -> {
                     markSucceeded(peer);
                     PeerEntry nextEntry = find(peer);
@@ -136,7 +148,7 @@ public class IterativeLookup {
 
     public CompletableFuture<GetProvidersResult> queryGetProviders(PeerId peer) {
         if (peer == null) return CompletableFuture.completedFuture(new GetProvidersResult(List.of(), List.of(), List.of()));
-        return protocol.sendGetProviders(target, peer)
+        return protocol.sendGetProviders(wireTarget, peer)
                 .thenApply(resp -> {
                     markSucceeded(peer);
                     PeerEntry nextEntry = find(peer);
@@ -298,6 +310,7 @@ public class IterativeLookup {
     public LookupState getState() { return state; }
     public boolean isFinished() { return state == LookupState.FINISHED; }
     public byte[] getTarget() { return target; }
+    public byte[] getWireTarget() { return wireTarget; }
     public List<com.libp2p.kademlia.records.Record> getCandidateRecords() { return List.copyOf(candidateRecords); }
     public List<com.libp2p.kademlia.records.ProviderRecord> getProviders() { return collectedProviders; }
     public Map<PeerId, com.libp2p.kademlia.records.Record> getPeerRecords() { return Map.copyOf(peerRecords); }

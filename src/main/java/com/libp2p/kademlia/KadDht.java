@@ -31,7 +31,6 @@ import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicInteger;
 
 public class KadDht {
     private final KadConfig config;
@@ -78,6 +77,7 @@ public class KadDht {
         this.protocol.setValidator(config.getValidator() != null ? config.getValidator() : RecordValidator.NOOP);
 
         this.identifyAdapter = new IdentifyAdapter(routingTable, null, config.getProtocolName());
+        this.identifyAdapter.setDiversityPolicy(config.getPeerDiversityPolicy());
         this.bootstrapManager = new BootstrapManager(routingTable, null, config.getBootstrapNodes(), config.getSubstreamTimeout(), config.getQueryTimeout(), config.getBootstrapAddressTTL().toMillis());
         this.rtRefresh = new RoutingTableRefresh(routingTable, null, config.getBootstrapInterval(), config.getPendingTimeout());
         this.rtRefresh.setProtocol(protocol);
@@ -97,7 +97,7 @@ public class KadDht {
         identifyAdapter.setHost(host);
         config.getPeerDiversityPolicy().setHost(host);
         bootstrapManager.setHost(host);
-        bootstrapManager.setFindNodeFn(target -> iterativeLookup(target).thenApply(v -> null));
+        bootstrapManager.setFindNodeFn(target -> iterativeLookup(target, target).thenApply(v -> null));
         rtRefresh.setHost(host);
     }
 
@@ -126,12 +126,12 @@ public class KadDht {
         recordRepubTask = scheduler.scheduleWithFixedDelay(() -> {
             if (!running) return;
             for (Record r : recordStore.records()) {
-                putValue(r.getKey(), r.getValue());
+                publishRecord(r);
             }
         }, config.getRecordPublicationInterval().toHours(), config.getRecordPublicationInterval().toHours(), TimeUnit.HOURS);
 
         recordReplicationManager = new RecordReplicationManager(recordStore,
-                (key, value) -> putValue(key, value),
+                record -> replicateRecord(record),
                 config.getRecordReplicationInterval());
         recordReplicationManager.start();
 
@@ -160,7 +160,7 @@ public class KadDht {
 
     public CompletableFuture<List<KadPeer>> findNode(PeerId peerId) {
         byte[] target = XorId.fromPeerId(peerId);
-        return iterativeLookup(target)
+        return iterativeLookup(target, peerId.getBytes())
                 .thenApply(lookup -> {
                     List<KadPeer> result = lookup.getClosestPeers();
                     for (KadPeer p : result) routingTable.insert(p.nodeId, p.multiaddrs);
@@ -173,7 +173,7 @@ public class KadDht {
     }
 
     public CompletableFuture<Boolean> putValue(byte[] key, byte[] value) {
-        return iterativeLookup(key)
+        return iterativeLookup(XorId.fromKey(key), key)
                 .thenCompose(lookup -> {
                     List<KadPeer> closest = lookup.getClosestPeers().stream()
                             .limit(config.getReplicationFactor()).toList();
@@ -213,7 +213,7 @@ public class KadDht {
     }
 
     public CompletableFuture<Record> getValue(byte[] key) {
-        return iterativeGetValueLookup(key)
+        return iterativeGetValueLookup(XorId.fromKey(key), key)
                 .thenCompose(result -> {
                     int successfulPeers = result.getQueriedPeers().size();
                     int quorum = config.getReadQuorum();
@@ -278,8 +278,29 @@ public class KadDht {
         return records.get(Math.max(0, Math.min(bestIdx, records.size() - 1)));
     }
 
+    private CompletableFuture<Boolean> replicateRecord(Record record) {
+        byte[] distanceTarget = XorId.fromKey(record.getKey());
+        List<KadPeer> closest = routingTable.findClosest(distanceTarget, config.getReplicationFactor());
+        if (closest.isEmpty()) return CompletableFuture.completedFuture(true);
+        metrics.replicationSuccess.incrementAndGet();
+        List<CompletableFuture<Boolean>> futures = new ArrayList<>();
+        for (KadPeer p : closest) {
+            futures.add(protocol.sendPutValue(record, p.nodeId));
+        }
+        return CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).thenApply(v -> true);
+    }
+
+    public CompletableFuture<Boolean> publishRecord(Record record) {
+        Record fresh = new Record(record.getKey(), record.getValue(), record.getPublisher(),
+                Instant.now().plus(config.getRecordMaxAge()));
+        if (recordStore.put(fresh)) {
+            metrics.recordsStored.incrementAndGet();
+        }
+        return replicateRecord(fresh);
+    }
+
     public CompletableFuture<Boolean> provide(byte[] key) {
-        return iterativeLookup(key)
+        return iterativeLookup(XorId.fromKey(key), key)
                 .thenCompose(lookup -> {
                     List<KadPeer> closest = lookup.getClosestPeers();
                     if (closest.isEmpty()) return CompletableFuture.completedFuture(true);
@@ -296,7 +317,7 @@ public class KadDht {
     }
 
     public CompletableFuture<List<ProviderRecord>> findProviders(byte[] key) {
-        return iterativeGetProvidersLookup(key)
+        return iterativeGetProvidersLookup(XorId.fromKey(key), key)
                 .thenApply(result -> {
                     List<ProviderRecord> local = providerStore.getProviders(key);
                     List<ProviderRecord> all = new ArrayList<>(result.getProviders());
@@ -307,14 +328,14 @@ public class KadDht {
                 });
     }
 
-    private CompletableFuture<IterativeLookup> iterativeLookup(byte[] target) {
+    private CompletableFuture<IterativeLookup> iterativeLookup(byte[] target, byte[] wireTarget) {
         int disjointPaths = config.getDisjointPaths();
         if (disjointPaths <= 1) {
             List<KadPeer> seed = routingTable.findClosest(target, config.getKValue());
             if (seed.isEmpty() && host != null) {
                 seed = getBootstrapSeeds(target);
             }
-            IterativeLookup lookup = new IterativeLookup(target, seed, config.getKValue(),
+            IterativeLookup lookup = new IterativeLookup(target, wireTarget, seed, config.getKValue(),
                     config.getAlphaValue(), config.getBetaValue(), config.getSubstreamTimeout(), protocol);
             if (host != null) lookup.setHost(host);
             lookup.setPeerAddressTTLSeconds(config.getPeerAddressTTL().toSeconds());
@@ -326,7 +347,7 @@ public class KadDht {
         java.util.Set<PeerId> excludedPeers = ConcurrentHashMap.newKeySet();
         for (int i = 0; i < disjointPaths; i++) {
             List<KadPeer> seed = getDisjointSeedPeers(target, i, disjointPaths);
-            IterativeLookup lookup = new IterativeLookup(target, seed, config.getKValue(),
+            IterativeLookup lookup = new IterativeLookup(target, wireTarget, seed, config.getKValue(),
                     config.getAlphaValue(), config.getBetaValue(), config.getSubstreamTimeout(), protocol);
             if (host != null) lookup.setHost(host);
             lookup.setPeerAddressTTLSeconds(config.getPeerAddressTTL().toSeconds());
@@ -362,19 +383,19 @@ public class KadDht {
                     if (deduped.size() > config.getKValue()) {
                         deduped = new ArrayList<>(deduped.subList(0, config.getKValue()));
                     }
-                    return new IterativeLookup(target, deduped, config.getKValue(),
+                    return new IterativeLookup(target, wireTarget, deduped, config.getKValue(),
                             config.getAlphaValue(), config.getBetaValue(), config.getSubstreamTimeout(), protocol);
                 });
     }
 
-    private CompletableFuture<IterativeLookup> iterativeGetValueLookup(byte[] target) {
+    private CompletableFuture<IterativeLookup> iterativeGetValueLookup(byte[] target, byte[] wireTarget) {
         int disjointPaths = config.getDisjointPaths();
         if (disjointPaths <= 1) {
             List<KadPeer> seed = routingTable.findClosest(target, config.getKValue());
             if (seed.isEmpty() && host != null) {
                 seed = getBootstrapSeeds(target);
             }
-            IterativeLookup lookup = new IterativeLookup(target, seed, config.getKValue(),
+            IterativeLookup lookup = new IterativeLookup(target, wireTarget, seed, config.getKValue(),
                     config.getAlphaValue(), config.getBetaValue(), config.getSubstreamTimeout(), protocol, config.getReadQuorum());
             if (host != null) lookup.setHost(host);
             lookup.setPeerAddressTTLSeconds(config.getPeerAddressTTL().toSeconds());
@@ -386,7 +407,7 @@ public class KadDht {
         java.util.Set<PeerId> excludedPeers2 = ConcurrentHashMap.newKeySet();
         for (int i = 0; i < disjointPaths; i++) {
             List<KadPeer> seed = getDisjointSeedPeers(target, i, disjointPaths);
-            IterativeLookup lookup = new IterativeLookup(target, seed, config.getKValue(),
+            IterativeLookup lookup = new IterativeLookup(target, wireTarget, seed, config.getKValue(),
                     config.getAlphaValue(), config.getBetaValue(), config.getSubstreamTimeout(), protocol, config.getReadQuorum());
             if (host != null) lookup.setHost(host);
             lookup.setPeerAddressTTLSeconds(config.getPeerAddressTTL().toSeconds());
@@ -421,7 +442,7 @@ public class KadDht {
                     if (deduped.size() > config.getKValue()) {
                         deduped = new ArrayList<>(deduped.subList(0, config.getKValue()));
                     }
-                    IterativeLookup merged = new IterativeLookup(target, deduped, config.getKValue(),
+                    IterativeLookup merged = new IterativeLookup(target, wireTarget, deduped, config.getKValue(),
                             config.getAlphaValue(), config.getBetaValue(), config.getSubstreamTimeout(), protocol, config.getReadQuorum());
                     if (host != null) merged.setHost(host);
                     merged.setPeerAddressTTLSeconds(config.getPeerAddressTTL().toSeconds());
@@ -431,14 +452,14 @@ public class KadDht {
                 });
     }
 
-    private CompletableFuture<IterativeLookup> iterativeGetProvidersLookup(byte[] target) {
+    private CompletableFuture<IterativeLookup> iterativeGetProvidersLookup(byte[] target, byte[] wireTarget) {
         int disjointPaths = config.getDisjointPaths();
         if (disjointPaths <= 1) {
             List<KadPeer> seed = routingTable.findClosest(target, config.getKValue());
             if (seed.isEmpty() && host != null) {
                 seed = getBootstrapSeeds(target);
             }
-            IterativeLookup lookup = new IterativeLookup(target, seed, config.getKValue(),
+            IterativeLookup lookup = new IterativeLookup(target, wireTarget, seed, config.getKValue(),
                     config.getAlphaValue(), config.getBetaValue(), config.getSubstreamTimeout(), protocol);
             if (host != null) lookup.setHost(host);
             lookup.setPeerAddressTTLSeconds(config.getPeerAddressTTL().toSeconds());
@@ -450,7 +471,7 @@ public class KadDht {
         java.util.Set<PeerId> excludedPeers3 = ConcurrentHashMap.newKeySet();
         for (int i = 0; i < disjointPaths; i++) {
             List<KadPeer> seed = getDisjointSeedPeers(target, i, disjointPaths);
-            IterativeLookup lookup = new IterativeLookup(target, seed, config.getKValue(),
+            IterativeLookup lookup = new IterativeLookup(target, wireTarget, seed, config.getKValue(),
                     config.getAlphaValue(), config.getBetaValue(), config.getSubstreamTimeout(), protocol);
             if (host != null) lookup.setHost(host);
             lookup.setPeerAddressTTLSeconds(config.getPeerAddressTTL().toSeconds());
@@ -483,7 +504,7 @@ public class KadDht {
                     if (deduped.size() > config.getKValue()) {
                         deduped = new ArrayList<>(deduped.subList(0, config.getKValue()));
                     }
-                    IterativeLookup merged = new IterativeLookup(target, deduped, config.getKValue(),
+                    IterativeLookup merged = new IterativeLookup(target, wireTarget, deduped, config.getKValue(),
                             config.getAlphaValue(), config.getBetaValue(), config.getSubstreamTimeout(), protocol);
                     if (host != null) merged.setHost(host);
                     merged.setPeerAddressTTLSeconds(config.getPeerAddressTTL().toSeconds());
@@ -501,7 +522,7 @@ public class KadDht {
     private CompletableFuture<IterativeLookup> runIterativeLookup(IterativeLookup lookup) {
         java.util.concurrent.atomic.AtomicReference<QueryScheduler> qsRef = new java.util.concurrent.atomic.AtomicReference<>();
         QueryScheduler qs = new QueryScheduler(config.getAlphaValue(), lookup, next -> {
-            return protocol.sendFindNode(lookup.getTarget(), next)
+            return protocol.sendFindNode(lookup.getWireTarget(), next)
                     .thenAccept(result -> {
                         lookup.onResponse(next, result.closerPeers());
                         QueryScheduler q = qsRef.get();

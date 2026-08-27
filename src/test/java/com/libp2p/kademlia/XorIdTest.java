@@ -58,6 +58,17 @@ class XorIdTest {
         byte[] key = XorId.fromPeerId(peer);
         assertNotNull(key);
         assertEquals(XorId.KEY_LENGTH, key.length);
+        assertArrayEquals(key, XorId.fromPeerId(peer), "fromPeerId must be deterministic");
+        assertArrayEquals(XorId.sha256(peer.getBytes()), key, "fromPeerId must hash the raw peer id bytes");
+    }
+
+    @Test
+    void testFromKey() {
+        byte[] rawKey = "some-arbitrary-key".getBytes();
+        byte[] key = XorId.fromKey(rawKey);
+        assertEquals(XorId.KEY_LENGTH, key.length);
+        assertArrayEquals(XorId.sha256(rawKey), key, "fromKey must hash the raw key");
+        assertArrayEquals(key, XorId.fromKey(rawKey), "fromKey must be deterministic");
     }
 
     @Test

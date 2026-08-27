@@ -10,4 +10,14 @@ public interface RecordStore {
     Iterable<Record> records();
     int size();
     default int garbageCollect() { return 0; }
+
+    default Record getAlive(byte[] key) {
+        Record r = get(key);
+        if (r != null && r.isExpired()) return null;
+        return r;
+    }
+
+    default List<Record> getAllAlive(byte[] key) {
+        return getAll(key).stream().filter(r -> !r.isExpired()).toList();
+    }
 }

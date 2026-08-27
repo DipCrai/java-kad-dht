@@ -1,5 +1,7 @@
 package com.libp2p.kademlia.integration;
 
+import com.libp2p.kademlia.routing.DefaultPeerDiversityPolicy;
+import com.libp2p.kademlia.routing.PeerDiversityPolicy;
 import com.libp2p.kademlia.routing.RoutingTable;
 import io.libp2p.core.Host;
 import io.libp2p.core.PeerId;
@@ -9,7 +11,6 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.TimeUnit;
 
 public class IdentifyAdapter {
     private final RoutingTable routingTable;
@@ -17,6 +18,7 @@ public class IdentifyAdapter {
     private final String kadProtocol;
     private final Set<PeerId> kadServers = ConcurrentHashMap.newKeySet();
     private final Set<PeerId> nonKadServers = ConcurrentHashMap.newKeySet();
+    private volatile PeerDiversityPolicy diversityPolicy;
 
     public IdentifyAdapter(RoutingTable routingTable, Host host, String kadProtocol) {
         this.routingTable = routingTable;
@@ -25,6 +27,7 @@ public class IdentifyAdapter {
     }
 
     public void setHost(Host host) { this.host = host; }
+    public void setDiversityPolicy(PeerDiversityPolicy policy) { this.diversityPolicy = policy; }
 
     public Boolean getKadServerSupport(PeerId peer) {
         if (kadServers.contains(peer)) return true;
@@ -39,6 +42,9 @@ public class IdentifyAdapter {
             kadServers.add(peer);
             nonKadServers.remove(peer);
             routingTable.insert(peer, addresses != null ? List.copyOf(addresses) : List.of());
+            if (diversityPolicy instanceof DefaultPeerDiversityPolicy dp && addresses != null) {
+                dp.cacheSubnet(peer, addresses);
+            }
         } else {
             nonKadServers.add(peer);
             kadServers.remove(peer);
@@ -48,5 +54,8 @@ public class IdentifyAdapter {
     public void onAddressesUpdated(PeerId peer, Collection<Multiaddr> addresses) {
         if (peer.equals(host.getPeerId())) return;
         routingTable.markSeen(peer);
+        if (diversityPolicy instanceof DefaultPeerDiversityPolicy dp && addresses != null) {
+            dp.cacheSubnet(peer, addresses);
+        }
     }
 }

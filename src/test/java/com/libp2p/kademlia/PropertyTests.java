@@ -67,10 +67,11 @@ class PropertyTests {
         for (int i = 0; i < K * 3; i++) {
             rt.insert(PeerId.random(), List.of());
         }
-        List<KadPeer> closest = rt.findClosest(target, K);
+        byte[] hashTarget = XorId.sha256(target);
+        List<KadPeer> closest = rt.findClosest(hashTarget, K);
         for (int i = 1; i < closest.size(); i++) {
-            byte[] dPrev = XorId.xor(target, XorId.fromPeerId(closest.get(i - 1).nodeId));
-            byte[] dCurr = XorId.xor(target, XorId.fromPeerId(closest.get(i).nodeId));
+            byte[] dPrev = XorId.xor(hashTarget, XorId.fromPeerId(closest.get(i - 1).nodeId));
+            byte[] dCurr = XorId.xor(hashTarget, XorId.fromPeerId(closest.get(i).nodeId));
             assertTrue(XorId.compareDistance(dPrev, dCurr) <= 0);
         }
     }
@@ -127,7 +128,7 @@ class PropertyTests {
         byte[] original = randomKey();
         PeerId peerId = XorId.toPeerId(original);
         byte[] recovered = XorId.fromPeerId(peerId);
-        assertArrayEquals(original, recovered);
+        assertArrayEquals(XorId.sha256(original), recovered);
     }
 
     @RepeatedTest(100)
