@@ -38,11 +38,15 @@ public final class RpcCodec {
     }
 
     public static Dht.Message putValue(WireRecord record) {
-        Dht.Record pbRec = Dht.Record.newBuilder()
+        Dht.Record.Builder rb = Dht.Record.newBuilder()
                 .setKey(ByteString.copyFrom(record.getKey()))
-                .setValue(ByteString.copyFrom(record.getValue())).build();
+                .setValue(ByteString.copyFrom(record.getValue()));
+        if (record.getAuthor() != null) rb.setAuthor(ByteString.copyFrom(record.getAuthor()));
+        if (record.getSignature() != null) rb.setSignature(ByteString.copyFrom(record.getSignature()));
+        rb.setSeq(record.getSeq());
         return Dht.Message.newBuilder().setType(Dht.Message.MessageType.PUT_VALUE)
-                .setRecord(pbRec).setClusterLevelRaw(10).build();
+                .setKey(ByteString.copyFrom(record.getKey()))
+                .setRecord(rb.build()).setClusterLevelRaw(10).build();
     }
 
     public static Dht.Message addProvider(byte[] key, byte[] selfPeerId, java.util.List<io.libp2p.core.multiformats.Multiaddr> addrs) {

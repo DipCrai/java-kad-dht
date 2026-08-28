@@ -38,6 +38,9 @@ protobuf {
 
 test {
     useJUnitPlatform()
+    systemProperty "interop.nodes", System.getProperty("interop.nodes", "")
+    systemProperty "interop.go", System.getProperty("interop.go", "")
+    systemProperty "interop.rust", System.getProperty("interop.rust", "")
 }
 
 publishing {

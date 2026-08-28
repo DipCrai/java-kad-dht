@@ -94,6 +94,8 @@ public class KadDht {
         routingTable.setLocalPeerId(host.getPeerId());
         routingTable.setHost(host);
         protocol.setHost(host);
+        host.addProtocolHandler(protocol);
+        host.addProtocolHandler(new io.libp2p.protocol.Ping());
         identifyAdapter.setHost(host);
         config.getPeerDiversityPolicy().setHost(host);
         bootstrapManager.setHost(host);

@@ -77,7 +77,15 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
     public CompletableFuture<Dht.Message> sendMessage(PeerId peer, Dht.Message msg) {
         return CompletableFuture.supplyAsync(() -> {
             try {
-                StreamPromise<KademliaController> promise = host.newStream(List.of(protocolName), peer);
+                List<Multiaddr> addrs;
+                try {
+                    addrs = new ArrayList<>(host.getAddressBook().getAddrs(peer)
+                            .get(substreamTimeout.toSeconds(), TimeUnit.SECONDS));
+                } catch (Exception e) {
+                    addrs = List.of();
+                }
+                StreamPromise<KademliaController> promise = host.newStream(List.of(protocolName), peer,
+                        addrs.toArray(new Multiaddr[0]));
                 KademliaController ctrl = promise.getController().get(substreamTimeout.toSeconds(), TimeUnit.SECONDS);
                 if (ctrl == null) throw new IllegalStateException("No controller");
                 return ctrl.sendRequest(msg).get(substreamTimeout.toSeconds(), TimeUnit.SECONDS);
@@ -96,7 +104,7 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
     }
 
     public CompletableFuture<Boolean> sendPutValue(Record record, PeerId peer) {
-        com.libp2p.kademlia.records.WireRecord wireRec = com.libp2p.kademlia.records.WireRecord.fromRecord(record);
+        com.libp2p.kademlia.records.WireRecord wireRec = com.libp2p.kademlia.records.WireRecord.fromRecord(record, host.getPeerId().getBytes(), System.currentTimeMillis());
         return sendMessage(peer, RpcCodec.putValue(wireRec)).thenApply(msg ->
                 msg.getType() == Dht.Message.MessageType.PUT_VALUE
                         && msg.hasRecord()
@@ -106,7 +114,14 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
     public CompletableFuture<Boolean> pingLiveness(PeerId peer, Duration timeout) {
         if (host == null) return CompletableFuture.completedFuture(false);
         try {
-            StreamPromise<io.libp2p.protocol.PingController> promise = host.newStream(List.of("/ipfs/ping/1.0.0"), peer);
+            List<Multiaddr> addrs;
+            try {
+                addrs = new ArrayList<>(host.getAddressBook().getAddrs(peer).get(timeout.toSeconds(), TimeUnit.SECONDS));
+            } catch (Exception e) {
+                addrs = List.of();
+            }
+            StreamPromise<io.libp2p.protocol.PingController> promise = host.newStream(List.of("/ipfs/ping/1.0.0"), peer,
+                    addrs.toArray(new Multiaddr[0]));
             io.libp2p.protocol.PingController ctrl = promise.getController().get(timeout.toSeconds(), TimeUnit.SECONDS);
             if (ctrl == null) return CompletableFuture.completedFuture(false);
             return ctrl.ping().thenApply(pong -> true).exceptionally(ex -> false);
@@ -115,11 +130,33 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
         }
     }
 
+    public CompletableFuture<Boolean> sendMessageFireAndForget(PeerId peer, Dht.Message msg) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                List<Multiaddr> addrs;
+                try {
+                    addrs = new ArrayList<>(host.getAddressBook().getAddrs(peer)
+                            .get(substreamTimeout.toSeconds(), TimeUnit.SECONDS));
+                } catch (Exception e) {
+                    addrs = List.of();
+                }
+                StreamPromise<KademliaController> promise = host.newStream(List.of(protocolName), peer,
+                        addrs.toArray(new Multiaddr[0]));
+                KademliaController ctrl = promise.getController().get(substreamTimeout.toSeconds(), TimeUnit.SECONDS);
+                if (ctrl == null) throw new IllegalStateException("No controller");
+                ctrl.sendRequest(msg);
+                return true;
+            } catch (Exception e) {
+                throw new CompletionException(e);
+            }
+        });
+    }
+
     public CompletableFuture<Boolean> sendAddProvider(byte[] key, PeerId peer) {
         List<Multiaddr> addrs = List.of();
         try { addrs = new ArrayList<>(host.getAddressBook().getAddrs(host.getPeerId()).get(2, TimeUnit.SECONDS)); }
         catch (Exception ignored) {}
-        return sendMessage(peer, RpcCodec.addProvider(key, host.getPeerId().getBytes(), addrs)).thenApply(msg -> true);
+        return sendMessageFireAndForget(peer, RpcCodec.addProvider(key, host.getPeerId().getBytes(), addrs));
     }
 
     public CompletableFuture<GetProvidersResponse> sendGetProviders(byte[] key, PeerId peer) {
@@ -146,6 +183,7 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
                 Dht.Record.Builder rb = Dht.Record.newBuilder()
                         .setKey(ByteString.copyFrom(wireRec.getKey()))
                         .setValue(ByteString.copyFrom(wireRec.getValue()));
+                if (record.getPublisher() != null) rb.setAuthor(ByteString.copyFrom(record.getPublisher()));
                 builder.setRecord(rb.build());
             }
         }
@@ -165,10 +203,13 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
             record.setTimeReceived(Instant.now());
             recordStore.put(record);
         }
-        Dht.Record echoRec = Dht.Record.newBuilder()
+        Dht.Record.Builder echoBuilder = Dht.Record.newBuilder()
                 .setKey(pbRec.getKey())
-                .setValue(pbRec.getValue()).build();
-        return Dht.Message.newBuilder().setType(Dht.Message.MessageType.PUT_VALUE).setRecord(echoRec).build();
+                .setValue(pbRec.getValue());
+        if (pbRec.hasAuthor()) echoBuilder.setAuthor(pbRec.getAuthor());
+        if (pbRec.hasSignature()) echoBuilder.setSignature(pbRec.getSignature());
+        echoBuilder.setSeq(pbRec.getSeq());
+        return Dht.Message.newBuilder().setType(Dht.Message.MessageType.PUT_VALUE).setRecord(echoBuilder.build()).build();
     }
 
     Dht.Message handleAddProvider(Dht.Message req, PeerId requester) {
@@ -258,7 +299,8 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
                 Dht.Record pbRec = msg.getRecord();
                 if (!pbRec.getKey().isEmpty() && !pbRec.getValue().isEmpty()) {
                     com.libp2p.kademlia.records.WireRecord wireRec = new com.libp2p.kademlia.records.WireRecord(
-                            pbRec.getKey().toByteArray(), pbRec.getValue().toByteArray());
+                            pbRec.getKey().toByteArray(), pbRec.getValue().toByteArray(),
+                            pbRec.hasAuthor() ? pbRec.getAuthor().toByteArray() : null, null, pbRec.getSeq());
                     Record record = Record.fromWire(wireRec.getKey(), wireRec.getValue());
                     record.setTimeReceived(Instant.now());
                     rec = Optional.of(record);
