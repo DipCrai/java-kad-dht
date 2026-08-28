@@ -41,6 +41,7 @@ test {
     systemProperty "interop.nodes", System.getProperty("interop.nodes", "")
     systemProperty "interop.go", System.getProperty("interop.go", "")
     systemProperty "interop.rust", System.getProperty("interop.rust", "")
+    systemProperty "interop.go-passthru", System.getProperty("interop.go-passthru", "")
 }
 
 publishing {

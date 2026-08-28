@@ -128,6 +128,45 @@ class InteropDht {
     }
 
     @Test
+    void putValueGo() throws Exception {
+        String addr = resolveNode("interop.go-passthru");
+        Assumptions.assumeTrue(addr != null, "set -Dinterop.go-passthru=... to run");
+        Multiaddr ma = Multiaddr.fromString(addr);
+        PeerId pid = ma.getPeerId();
+        KadDht dht = new KadDht(KadConfig.builder().mode(KadMode.CLIENT)
+                .protocolName("/interop/kad/1.0.0")
+                .queryTimeout(Duration.ofSeconds(10)).writeQuorum(1).readQuorum(1).build());
+        Host h = newHost(dht);
+        try {
+            register(ma, h, dht);
+            h.getAddressBook().addAddrs(h.getPeerId(), 60_000L, h.listenAddresses().get(0)).join();
+
+            byte[] key = "/custom/putvalue-test-key".getBytes(StandardCharsets.UTF_8);
+            byte[] value = "hello-from-java".getBytes(StandardCharsets.UTF_8);
+
+            com.libp2p.kademlia.records.WireRecord wireRec = new com.libp2p.kademlia.records.WireRecord(key, value);
+            com.google.protobuf.ByteString bsKey = com.google.protobuf.ByteString.copyFrom(key);
+            com.google.protobuf.ByteString bsValue = com.google.protobuf.ByteString.copyFrom(value);
+            com.libp2p.kademlia.pb.Dht.Record rec = com.libp2p.kademlia.pb.Dht.Record.newBuilder()
+                    .setKey(bsKey).setValue(bsValue).build();
+            com.libp2p.kademlia.pb.Dht.Message putMsg = com.libp2p.kademlia.pb.Dht.Message.newBuilder()
+                    .setType(com.libp2p.kademlia.pb.Dht.Message.MessageType.PUT_VALUE)
+                    .setKey(bsKey).setRecord(rec).setClusterLevelRaw(10).build();
+            boolean sent = dht.getProtocol().sendMessageFireAndForget(pid, putMsg).get(10, TimeUnit.SECONDS);
+            System.out.println("### GO PUT_VALUE sent=" + sent);
+            assertTrue(sent, "fire-and-forget PUT_VALUE should succeed");
+
+            Thread.sleep(2000);
+
+            var resp = dht.getProtocol().sendMessage(pid,
+                    com.libp2p.kademlia.protocol.RpcCodec.getValue(key)).get(10, TimeUnit.SECONDS);
+            System.out.println("### GO GET_VALUE hasRecord=" + resp.hasRecord());
+            assertTrue(resp.hasRecord(), "getValue should return a record");
+            assertArrayEquals(value, resp.getRecord().getValue().toByteArray());
+        } finally { dht.close(); h.stop().join(); }
+    }
+
+    @Test
     void addProviderGetProvidersRust() throws Exception {
         String addr = resolveNode("interop.rust");
         Assumptions.assumeTrue(addr != null, "set -Dinterop.rust=... to run");

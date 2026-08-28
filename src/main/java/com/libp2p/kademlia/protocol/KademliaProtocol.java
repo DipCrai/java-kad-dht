@@ -104,7 +104,7 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
     }
 
     public CompletableFuture<Boolean> sendPutValue(Record record, PeerId peer) {
-        com.libp2p.kademlia.records.WireRecord wireRec = com.libp2p.kademlia.records.WireRecord.fromRecord(record, host.getPeerId().getBytes(), System.currentTimeMillis());
+        com.libp2p.kademlia.records.WireRecord wireRec = com.libp2p.kademlia.records.WireRecord.fromRecord(record);
         return sendMessage(peer, RpcCodec.putValue(wireRec)).thenApply(msg ->
                 msg.getType() == Dht.Message.MessageType.PUT_VALUE
                         && msg.hasRecord()
@@ -183,7 +183,6 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
                 Dht.Record.Builder rb = Dht.Record.newBuilder()
                         .setKey(ByteString.copyFrom(wireRec.getKey()))
                         .setValue(ByteString.copyFrom(wireRec.getValue()));
-                if (record.getPublisher() != null) rb.setAuthor(ByteString.copyFrom(record.getPublisher()));
                 builder.setRecord(rb.build());
             }
         }
@@ -206,9 +205,6 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
         Dht.Record.Builder echoBuilder = Dht.Record.newBuilder()
                 .setKey(pbRec.getKey())
                 .setValue(pbRec.getValue());
-        if (pbRec.hasAuthor()) echoBuilder.setAuthor(pbRec.getAuthor());
-        if (pbRec.hasSignature()) echoBuilder.setSignature(pbRec.getSignature());
-        echoBuilder.setSeq(pbRec.getSeq());
         return Dht.Message.newBuilder().setType(Dht.Message.MessageType.PUT_VALUE).setRecord(echoBuilder.build()).build();
     }
 
@@ -298,10 +294,7 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
             if (msg.hasRecord()) {
                 Dht.Record pbRec = msg.getRecord();
                 if (!pbRec.getKey().isEmpty() && !pbRec.getValue().isEmpty()) {
-                    com.libp2p.kademlia.records.WireRecord wireRec = new com.libp2p.kademlia.records.WireRecord(
-                            pbRec.getKey().toByteArray(), pbRec.getValue().toByteArray(),
-                            pbRec.hasAuthor() ? pbRec.getAuthor().toByteArray() : null, null, pbRec.getSeq());
-                    Record record = Record.fromWire(wireRec.getKey(), wireRec.getValue());
+                    Record record = Record.fromWire(pbRec.getKey().toByteArray(), pbRec.getValue().toByteArray());
                     record.setTimeReceived(Instant.now());
                     rec = Optional.of(record);
                 }

@@ -8,10 +8,7 @@ option java_outer_classname = "Dht";
 message Record {
     optional bytes key = 1;
     optional bytes value = 2;
-    optional bytes author = 3;
-    optional bytes signature = 4;
     optional string timeReceived = 5;
-    optional uint64 seq = 6;
 }
 
 message Message {

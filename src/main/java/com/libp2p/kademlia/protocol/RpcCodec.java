@@ -41,9 +41,6 @@ public final class RpcCodec {
         Dht.Record.Builder rb = Dht.Record.newBuilder()
                 .setKey(ByteString.copyFrom(record.getKey()))
                 .setValue(ByteString.copyFrom(record.getValue()));
-        if (record.getAuthor() != null) rb.setAuthor(ByteString.copyFrom(record.getAuthor()));
-        if (record.getSignature() != null) rb.setSignature(ByteString.copyFrom(record.getSignature()));
-        rb.setSeq(record.getSeq());
         return Dht.Message.newBuilder().setType(Dht.Message.MessageType.PUT_VALUE)
                 .setKey(ByteString.copyFrom(record.getKey()))
                 .setRecord(rb.build()).setClusterLevelRaw(10).build();
