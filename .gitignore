@@ -9,3 +9,5 @@ gradlew.bat
 *.iml
 out/
 AGENTS.md
+interop/go/go-node
+interop/rust/target/

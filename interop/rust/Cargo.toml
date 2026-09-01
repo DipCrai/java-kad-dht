@@ -1,0 +1,19 @@
+[package]
+name = "kad-rust-node"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "kad-rust-node"
+path = "src/main.rs"
+
+[[example]]
+name = "rust_ping"
+path = "examples/rust_ping.rs"
+
+[dependencies]
+libp2p = { version = "0.54", features = ["tcp", "noise", "yamux", "kad", "identify", "ping", "macros", "tokio", "ecdsa"] }
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
