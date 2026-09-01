@@ -148,4 +148,43 @@ class ClientServerLifecycleTest {
             c2.dht.close(); c2.host.stop().join();
         }
     }
+
+    @Test
+    void bootstrapFromEmptyRTCompletes() throws Exception {
+        NodeEntry bootstrap = createNode(KadMode.SERVER);
+        NodeEntry target = createNode(KadMode.SERVER);
+        try {
+            connect(bootstrap, target);
+            connect(target, bootstrap);
+
+            KadDht fresh = new KadDht(KadConfig.builder()
+                    .mode(KadMode.SERVER)
+                    .kValue(20)
+                    .queryTimeout(Duration.ofSeconds(15))
+                    .bootstrapNodes(List.of(bootstrap.addr))
+                    .build());
+            Host freshHost = new HostBuilder()
+                    .muxer(StreamMuxerProtocol::getYamux)
+                    .listen("/ip4/127.0.0.1/tcp/0")
+                    .build();
+            freshHost.start().join();
+            fresh.setHost(freshHost);
+            fresh.start();
+
+            try {
+                fresh.bootstrap().get(15, TimeUnit.SECONDS);
+
+                freshHost.getAddressBook().addAddrs(bootstrap.peerId, 60_000L, bootstrap.addr).join();
+                freshHost.getAddressBook().addAddrs(target.peerId, 60_000L, target.addr).join();
+                fresh.getRoutingTable().insert(bootstrap.peerId, List.of(bootstrap.addr));
+                fresh.getRoutingTable().insert(target.peerId, List.of(target.addr));
+
+                List<KadPeer> closest = fresh.findNode(target.peerId).get(10, TimeUnit.SECONDS);
+                boolean found = closest.stream().anyMatch(p -> p.nodeId.equals(target.peerId));
+                assertTrue(found, "after bootstrap + register, findNode should reach target");
+            } finally {
+                fresh.close(); freshHost.stop().join();
+            }
+        } finally { bootstrap.dht.close(); bootstrap.host.stop().join(); target.dht.close(); target.host.stop().join(); }
+    }
 }

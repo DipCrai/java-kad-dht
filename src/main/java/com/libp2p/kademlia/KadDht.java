@@ -286,12 +286,14 @@ public class KadDht {
         byte[] distanceTarget = XorId.fromKey(record.getKey());
         List<KadPeer> closest = routingTable.findClosest(distanceTarget, config.getReplicationFactor());
         if (closest.isEmpty()) return CompletableFuture.completedFuture(true);
-        metrics.replicationSuccess.incrementAndGet();
         List<CompletableFuture<Boolean>> futures = new ArrayList<>();
         for (KadPeer p : closest) {
             futures.add(protocol.sendPutValue(record, p.nodeId));
         }
-        return CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).thenApply(v -> true);
+        return CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).thenApply(v -> {
+            metrics.replicationSuccess.incrementAndGet();
+            return true;
+        });
     }
 
     public CompletableFuture<Boolean> publishRecord(Record record) {

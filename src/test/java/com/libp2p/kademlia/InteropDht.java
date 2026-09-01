@@ -185,14 +185,14 @@ class InteropDht {
 
             boolean added = dht.getProtocol().sendAddProvider(key, pid).get(10, TimeUnit.SECONDS);
             System.out.println("### RUST ADD_PROVIDER=" + added);
+            assertTrue(added, "Rust ADD_PROVIDER should succeed");
 
             Thread.sleep(1000);
 
             var resp = dht.getProtocol().sendMessage(pid,
                     com.libp2p.kademlia.protocol.RpcCodec.getProviders(key)).get(10, TimeUnit.SECONDS);
             System.out.println("### RUST GET_PROVIDERS providers=" + resp.getProviderPeersCount());
-        } catch (Exception e) {
-            System.out.println("### RUST PROVIDER FAIL: " + e);
+            assertTrue(resp.getProviderPeersCount() > 0, "Rust GET_PROVIDERS should return providers");
         } finally { dht.close(); h.stop().join(); }
     }
 }

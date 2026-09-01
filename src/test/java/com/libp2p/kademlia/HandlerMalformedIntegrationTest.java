@@ -100,7 +100,12 @@ class HandlerMalformedIntegrationTest {
                     .get(10, TimeUnit.SECONDS);
             assertNotNull(resp);
             assertEquals(Dht.Message.MessageType.PUT_VALUE, resp.getType());
-            assertFalse(resp.hasRecord());
+            assertFalse(resp.hasRecord(), "no record should be echoed for PUT_VALUE without record");
+
+            Dht.Message ping = RpcCodec.ping();
+            Dht.Message pingResp = client.dht.getProtocol().sendMessage(server.peerId, ping)
+                    .get(10, TimeUnit.SECONDS);
+            assertNotNull(pingResp, "connection should still work after malformed PUT_VALUE");
         } finally { server.dht.close(); server.host.stop().join(); client.dht.close(); client.host.stop().join(); }
     }
 
@@ -122,6 +127,11 @@ class HandlerMalformedIntegrationTest {
                     .get(10, TimeUnit.SECONDS);
             assertNotNull(resp);
             assertEquals(Dht.Message.MessageType.PUT_VALUE, resp.getType());
+            assertFalse(resp.hasRecord(), "empty key record should not be stored or echoed");
+
+            byte[] checkKey = new byte[32];
+            com.libp2p.kademlia.records.Record stored = server.dht.getRecordStore().get(checkKey);
+            assertNull(stored, "empty key should not be stored");
         } finally { server.dht.close(); server.host.stop().join(); client.dht.close(); client.host.stop().join(); }
     }
 
@@ -159,6 +169,12 @@ class HandlerMalformedIntegrationTest {
             Dht.Message resp = client.dht.getProtocol().sendMessage(server.peerId, msg)
                     .get(10, TimeUnit.SECONDS);
             assertNotNull(resp);
+            assertEquals(Dht.Message.MessageType.ADD_PROVIDER, resp.getType());
+
+            Dht.Message ping = RpcCodec.ping();
+            Dht.Message pingResp = client.dht.getProtocol().sendMessage(server.peerId, ping)
+                    .get(10, TimeUnit.SECONDS);
+            assertNotNull(pingResp, "connection should still work after malformed ADD_PROVIDER");
         } finally { server.dht.close(); server.host.stop().join(); client.dht.close(); client.host.stop().join(); }
     }
 
@@ -300,5 +316,66 @@ class HandlerMalformedIntegrationTest {
             server2.dht.close(); server2.host.stop().join();
             client.dht.close(); client.host.stop().join();
         }
+    }
+
+    @Test
+    void getValueExpiredRecordReturnsNoRecord() throws Exception {
+        NodeEntry server = createNode();
+        NodeEntry client = createNode();
+        try {
+            connect(client, server);
+            byte[] key = new byte[32];
+            byte[] val = "expired-value".getBytes(StandardCharsets.UTF_8);
+            com.libp2p.kademlia.records.Record rec =
+                    new com.libp2p.kademlia.records.Record(key, val, null, java.time.Instant.now().minusSeconds(3600));
+            rec.setTimeReceived(java.time.Instant.now().minusSeconds(7200));
+            server.dht.getRecordStore().put(rec);
+
+            Dht.Message msg = Dht.Message.newBuilder()
+                    .setType(Dht.Message.MessageType.GET_VALUE)
+                    .setKey(ByteString.copyFrom(key))
+                    .build();
+            Dht.Message resp = client.dht.getProtocol().sendMessage(server.peerId, msg)
+                    .get(10, TimeUnit.SECONDS);
+            assertNotNull(resp);
+            assertEquals(Dht.Message.MessageType.GET_VALUE, resp.getType());
+            assertFalse(resp.hasRecord(), "expired record should not be returned by GET_VALUE");
+        } finally { server.dht.close(); server.host.stop().join(); client.dht.close(); client.host.stop().join(); }
+    }
+
+    @Test
+    void malformedRequestDoesNotBreakConnection() throws Exception {
+        NodeEntry server = createNode();
+        NodeEntry client = createNode();
+        try {
+            connect(client, server);
+
+            Dht.Message garbage = Dht.Message.newBuilder()
+                    .setType(Dht.Message.MessageType.FIND_NODE)
+                    .setKey(ByteString.copyFrom(new byte[512]))
+                    .build();
+            client.dht.getProtocol().sendMessage(server.peerId, garbage).get(5, TimeUnit.SECONDS);
+
+            Dht.Message ping = RpcCodec.ping();
+            Dht.Message resp = client.dht.getProtocol().sendMessage(server.peerId, ping)
+                    .get(5, TimeUnit.SECONDS);
+            assertNotNull(resp, "ping after malformed request should succeed");
+
+            byte[] key = new byte[32];
+            byte[] val = "after-malformed".getBytes(StandardCharsets.UTF_8);
+            Dht.Record rec = Dht.Record.newBuilder()
+                    .setKey(ByteString.copyFrom(key))
+                    .setValue(ByteString.copyFrom(val))
+                    .build();
+            Dht.Message putMsg = Dht.Message.newBuilder()
+                    .setType(Dht.Message.MessageType.PUT_VALUE)
+                    .setKey(ByteString.copyFrom(key))
+                    .setRecord(rec)
+                    .build();
+            Dht.Message putResp = client.dht.getProtocol().sendMessage(server.peerId, putMsg)
+                    .get(5, TimeUnit.SECONDS);
+            assertNotNull(putResp, "PUT_VALUE after malformed request should succeed");
+            assertTrue(putResp.hasRecord());
+        } finally { server.dht.close(); server.host.stop().join(); client.dht.close(); client.host.stop().join(); }
     }
 }

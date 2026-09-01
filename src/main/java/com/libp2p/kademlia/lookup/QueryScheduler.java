@@ -87,10 +87,10 @@ public class QueryScheduler {
             future.whenComplete((v, ex) -> {
                 inFlight.remove(next);
                 inFlightFutures.remove(next);
+                activeCount.decrementAndGet();
+                globalActiveQueries.decrementAndGet();
                 if (!cancelled) {
                     completed.add(next);
-                    activeCount.decrementAndGet();
-                    globalActiveQueries.decrementAndGet();
                 }
                 dispatch();
             });
