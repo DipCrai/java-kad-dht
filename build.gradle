@@ -48,6 +48,17 @@ publishing {
     publications {
         mavenJava(MavenPublication) {
             from components.java
+            pom {
+                name = 'libp2p-kademlia-dht'
+                description = 'Full Kademlia DHT implementation for jvm-libp2p'
+                url = 'https://github.com/DipCrai/libp2p-kademlia-dht'
+                licenses {
+                    license {
+                        name = 'MIT'
+                        url = 'https://opensource.org/licenses/MIT'
+                    }
+                }
+            }
         }
     }
     repositories {
