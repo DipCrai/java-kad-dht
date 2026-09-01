@@ -12,6 +12,23 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
+/**
+ * Immutable configuration for {@link com.libp2p.kademlia.KadDht}.
+ *
+ * <p>Use the {@link Builder} to construct. All values have sensible defaults
+ * matching the libp2p Kad spec (K=20, α=3, β=3, 48h TTLs).</p>
+ *
+ * <h3>Example</h3>
+ * <pre>{@code
+ * KadConfig config = KadConfig.builder()
+ *         .mode(KadMode.SERVER)
+ *         .writeQuorum(3)
+ *         .readQuorum(3)
+ *         .build();
+ * }</pre>
+ *
+ * @see com.libp2p.kademlia.KadDht
+ */
 public class KadConfig {
 
     private final String protocolName;
@@ -84,38 +101,103 @@ public class KadConfig {
         this.peerAddressTTL = builder.peerAddressTTL;
     }
 
+    /** @return the Kademlia protocol ID (default: /ipfs/kad/1.0.0) */
     public String getProtocolName() { return protocolName; }
+
+    /** @return the bucket size / replication factor (default: 20) */
     public int getKValue() { return kValue; }
+
+    /** @return the query parallelism (default: 3) */
     public int getAlphaValue() { return alphaValue; }
+
+    /** @return the resiliency parameter (default: 3) */
     public int getBetaValue() { return betaValue; }
+
+    /** @return the per-query timeout (default: 60s) */
     public Duration getQueryTimeout() { return queryTimeout; }
+
+    /** @return the per-substream timeout (default: 10s) */
     public Duration getSubstreamTimeout() { return substreamTimeout; }
+
+    /** @return the max protobuf message size in bytes (default: 16384) */
     public int getMaxPacketSize() { return maxPacketSize; }
+
+    /** @return the bootstrap refresh interval (default: 5min) */
     public Duration getBootstrapInterval() { return bootstrapInterval; }
+
+    /** @return the pending entry timeout (default: 60s) */
     public Duration getPendingTimeout() { return pendingTimeout; }
+
+    /** @return the provider record TTL (default: 48h) */
     public Duration getProviderRecordTTL() { return providerRecordTTL; }
+
+    /** @return the provider address TTL (default: 30min) */
     public Duration getProviderAddrTTL() { return providerAddrTTL; }
+
+    /** @return the max record age (default: 48h) */
     public Duration getRecordMaxAge() { return recordMaxAge; }
+
+    /** @return the record replication interval (default: 1h) */
     public Duration getRecordReplicationInterval() { return recordReplicationInterval; }
+
+    /** @return the record publication interval (default: 22h) */
     public Duration getRecordPublicationInterval() { return recordPublicationInterval; }
+
+    /** @return the provider publication/reprovide interval (default: 12h) */
     public Duration getProviderPublicationInterval() { return providerPublicationInterval; }
+
+    /** @return the max number of records in the store (default: 1024) */
     public int getMaxRecords() { return maxRecords; }
+
+    /** @return the max number of provided keys (default: 1024) */
     public int getMaxProvidedKeys() { return maxProvidedKeys; }
+
+    /** @return the max providers per key (default: 20) */
     public int getMaxProvidersPerKey() { return maxProvidersPerKey; }
+
+    /** @return the max record value size in bytes (default: 65536) */
     public int getMaxRecordValueSize() { return maxRecordValueSize; }
+
+    /** @return the max concurrent outbound queries (default: 100) */
     public int getMaxConcurrentQueries() { return maxConcurrentQueries; }
+
+    /** @return the max concurrent inbound requests (default: 100) */
     public int getMaxInboundRequests() { return maxInboundRequests; }
+
+    /** @return the replication factor (default: 20) */
     public int getReplicationFactor() { return replicationFactor; }
+
+    /** @return the write quorum (default: 1) */
     public int getWriteQuorum() { return writeQuorum; }
+
+    /** @return the read quorum (default: 1) */
     public int getReadQuorum() { return readQuorum; }
+
+    /** @return the number of disjoint query paths (default: 1) */
     public int getDisjointPaths() { return disjointPaths; }
+
+    /** @return the list of bootstrap peer multiaddresses */
     public List<Multiaddr> getBootstrapNodes() { return bootstrapNodes; }
+
+    /** @return the DHT operating mode */
     public KadMode getMode() { return mode; }
+
+    /** @return the record validator, or null for no validation */
     public RecordValidator getValidator() { return validator; }
+
+    /** @return the peer diversity policy */
     public PeerDiversityPolicy getPeerDiversityPolicy() { return peerDiversityPolicy; }
+
+    /** @return the custom query filter, or null for default */
     public QueryFilter getQueryFilter() { return queryFilter; }
+
+    /** @return the admission check policy */
     public AdmissionCheck getAdmissionCheck() { return admissionCheck; }
+
+    /** @return the bootstrap address TTL (default: 5min) */
     public Duration getBootstrapAddressTTL() { return bootstrapAddressTTL; }
+
+    /** @return the peer address TTL (default: 30min) */
     public Duration getPeerAddressTTL() { return peerAddressTTL; }
 
     public static Builder builder() {

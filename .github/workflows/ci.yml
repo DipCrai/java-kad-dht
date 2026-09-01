@@ -61,27 +61,60 @@ jobs:
 
       - name: Run unit tests
         run: ./gradlew test --tests "com.libp2p.kademlia.KadDhtTest" -i
-        continue-on-error: true
 
       - name: Start Go node
         run: |
-          cd interop/go
-          ./go-node > /tmp/go-out.txt 2>/tmp/go-err.txt &
-          echo "GO_PID=$!" >> $GITHUB_ENV
-          sleep 2
-          GO_ADDR=$(head -1 /tmp/go-out.txt)
-          echo "GO_ADDR=$GO_ADDR" >> $GITHUB_ENV
-          echo "Go node started: $GO_ADDR"
+          ./interop/go/go-node > /tmp/go-out.txt 2>/tmp/go-err.txt &
+          GO_PID=$!
+          echo "GO_PID=$GO_PID" >> $GITHUB_ENV
+
+          for i in $(seq 1 10); do
+            if [ -s /tmp/go-out.txt ]; then
+              GO_ADDR=$(head -1 /tmp/go-out.txt)
+              echo "GO_ADDR=$GO_ADDR" >> $GITHUB_ENV
+              echo "Go node ready: $GO_ADDR"
+              break
+            fi
+            if ! kill -0 $GO_PID 2>/dev/null; then
+              echo "Go node died"
+              cat /tmp/go-err.txt
+              exit 1
+            fi
+            sleep 1
+          done
+
+          if [ -z "$GO_ADDR" ]; then
+            echo "Go node failed to start within 10s"
+            cat /tmp/go-err.txt
+            exit 1
+          fi
 
       - name: Start Rust node
         run: |
-          cd interop/rust
-          ./target/release/kad-rust-node > /tmp/rust-out.txt 2>/tmp/rust-err.txt &
-          echo "RUST_PID=$!" >> $GITHUB_ENV
-          sleep 2
-          RUST_ADDR=$(head -1 /tmp/rust-out.txt)
-          echo "RUST_ADDR=$RUST_ADDR" >> $GITHUB_ENV
-          echo "Rust node started: $RUST_ADDR"
+          ./interop/rust/target/release/kad-rust-node > /tmp/rust-out.txt 2>/tmp/rust-err.txt &
+          RUST_PID=$!
+          echo "RUST_PID=$RUST_PID" >> $GITHUB_ENV
+
+          for i in $(seq 1 10); do
+            if [ -s /tmp/rust-out.txt ]; then
+              RUST_ADDR=$(head -1 /tmp/rust-out.txt)
+              echo "RUST_ADDR=$RUST_ADDR" >> $GITHUB_ENV
+              echo "Rust node ready: $RUST_ADDR"
+              break
+            fi
+            if ! kill -0 $RUST_PID 2>/dev/null; then
+              echo "Rust node died"
+              cat /tmp/rust-err.txt
+              exit 1
+            fi
+            sleep 1
+          done
+
+          if [ -z "$RUST_ADDR" ]; then
+            echo "Rust node failed to start within 10s"
+            cat /tmp/rust-err.txt
+            exit 1
+          fi
 
       - name: Run interop tests
         run: |
@@ -97,6 +130,8 @@ jobs:
           mkdir -p /tmp/ci-logs
           cp /tmp/go-err.txt /tmp/ci-logs/ 2>/dev/null || true
           cp /tmp/rust-err.txt /tmp/ci-logs/ 2>/dev/null || true
+          cp /tmp/go-out.txt /tmp/ci-logs/ 2>/dev/null || true
+          cp /tmp/rust-out.txt /tmp/ci-logs/ 2>/dev/null || true
           cp -r build/reports/tests/test /tmp/ci-logs/test-report/ 2>/dev/null || true
           cp -r build/test-results/test /tmp/ci-logs/test-results/ 2>/dev/null || true
 
@@ -108,7 +143,22 @@ jobs:
           path: /tmp/ci-logs/
           retention-days: 7
 
-      - name: Cleanup
+      - name: Kill background processes
         if: always()
         run: |
-          kill ${{ env.GO_PID }} ${{ env.RUST_PID }} 2>/dev/null || true
+          for sig in TERM TERM KILL; do
+            for pid in ${{ env.GO_PID }} ${{ env.RUST_PID }}; do
+              if kill -0 "$pid" 2>/dev/null; then
+                kill -$sig "$pid" 2>/dev/null || true
+              fi
+            done
+            sleep 1
+          done
+          pkill -f "go-node" 2>/dev/null || true
+          pkill -f "kad-rust-node" 2>/dev/null || true
+          sleep 1
+          remaining=$(ps aux | grep -E "go-node|kad-rust-node" | grep -v grep | wc -l)
+          if [ "$remaining" -gt 0 ]; then
+            echo "WARNING: $remaining processes still alive after cleanup"
+            ps aux | grep -E "go-node|kad-rust-node" | grep -v grep
+          fi

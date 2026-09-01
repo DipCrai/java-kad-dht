@@ -4,8 +4,8 @@ plugins {
     id 'maven-publish'
 }
 
-group = 'io.libp2p'
-version = '0.1.0-SNAPSHOT'
+group = 'com.github.dipcrai'
+version = '0.1.0'
 
 java {
     sourceCompatibility = JavaVersion.VERSION_21
@@ -49,9 +49,9 @@ publishing {
         mavenJava(MavenPublication) {
             from components.java
             pom {
-                name = 'libp2p-kademlia-dht'
+                name = 'java-kad-dht'
                 description = 'Full Kademlia DHT implementation for jvm-libp2p'
-                url = 'https://github.com/DipCrai/libp2p-kademlia-dht'
+                url = 'https://github.com/DipCrai/java-kad-dht'
                 licenses {
                     license {
                         name = 'MIT'
