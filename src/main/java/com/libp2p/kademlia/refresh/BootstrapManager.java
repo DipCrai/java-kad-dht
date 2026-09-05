@@ -1,5 +1,6 @@
 package com.libp2p.kademlia.refresh;
 
+import com.libp2p.kademlia.DnsaddrResolver;
 import com.libp2p.kademlia.routing.RoutingTable;
 import com.libp2p.kademlia.routing.KadPeer;
 import com.libp2p.kademlia.XorId;
@@ -62,23 +63,41 @@ public class BootstrapManager {
         if (bootstrapNodes.isEmpty()) return CompletableFuture.completedFuture(null);
         if (host == null) return CompletableFuture.completedFuture(null);
         List<CompletableFuture<Void>> futures = new ArrayList<>();
-        for (Multiaddr addr : bootstrapNodes) {
+        for (Multiaddr addr : expandedBootstrapAddrs()) {
             try {
                 String addrStr = addr.toString();
                 String[] parts = addrStr.split("/p2p/");
                 if (parts.length > 1) {
                     PeerId peerId = PeerId.fromBase58(parts[1]);
                     host.getAddressBook().addAddrs(peerId, bootstrapAddressTTL, addr);
-                    futures.add(host.newStream(List.of("/ipfs/ping/1.0.0"), peerId)
-                            .getController()
+                    futures.add(host.getNetwork().connect(peerId, addr)
                             .orTimeout(connectTimeout.toMillis(), TimeUnit.MILLISECONDS)
-                            .thenCompose(ctrl -> kadSupported(peerId))
-                            .thenAccept(ok -> { if (ok) routingTable.markSeen(peerId); })
+                            .thenAccept(conn -> {
+                                routingTable.insert(peerId, List.of(addr));
+                            })
                             .exceptionally(ex -> null));
                 }
             } catch (Exception ignored) {}
         }
         return CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new));
+    }
+
+    /**
+     * Resolves DNS-based bootstrap multiaddrs ({@code /dnsaddr/...}, {@code /dns4/...},
+     * {@code /dns6/...}, {@code /dns/...}) into concrete {@code /ip4|/ip6} addresses on
+     * every bootstrap round, staying in sync with DNS changes the same way go-libp2p does.
+     */
+    private List<Multiaddr> expandedBootstrapAddrs() {
+        List<Multiaddr> out = new ArrayList<>();
+        for (Multiaddr addr : bootstrapNodes) {
+            String as = addr.toString();
+            if (DnsaddrResolver.isResolvable(as)) {
+                out.addAll(DnsaddrResolver.resolve(as));
+            } else {
+                out.add(addr);
+            }
+        }
+        return out;
     }
 
     private CompletableFuture<Void> selfLookup() {
@@ -98,13 +117,6 @@ public class BootstrapManager {
             }
         }
         return CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new));
-    }
-
-    private CompletableFuture<Boolean> kadSupported(PeerId peerId) {
-        if (findNodeFn == null) return CompletableFuture.completedFuture(true);
-        return findNodeFn.apply(XorId.fromPeerId(peerId))
-                .thenApply(v -> true)
-                .exceptionally(ex -> false);
     }
 
     private CompletableFuture<Void> iterativeFindNode(byte[] target) {
