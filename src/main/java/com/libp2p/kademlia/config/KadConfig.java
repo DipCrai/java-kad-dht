@@ -1,5 +1,6 @@
 package com.libp2p.kademlia.config;
 
+import com.libp2p.kademlia.bootstrap.DefaultBootstrapPeers;
 import com.libp2p.kademlia.query.QueryFilter;
 import com.libp2p.kademlia.records.RecordValidator;
 import com.libp2p.kademlia.routing.AdmissionCheck;
@@ -231,7 +232,7 @@ public class KadConfig {
         private int writeQuorum = 1;
         private int readQuorum = 1;
         private int disjointPaths = 1;
-        private List<Multiaddr> bootstrapNodes = new ArrayList<>();
+        private List<Multiaddr> bootstrapNodes = new ArrayList<>(DefaultBootstrapPeers.DEFAULT_BOOTSTRAP_PEERS);
         private KadMode mode = KadMode.AUTO_SERVER;
         private RecordValidator validator = RecordValidator.NOOP;
         private PeerDiversityPolicy peerDiversityPolicy = new DefaultPeerDiversityPolicy();

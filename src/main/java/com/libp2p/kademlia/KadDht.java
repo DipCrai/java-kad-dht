@@ -788,6 +788,9 @@ public class KadDht {
     public IdentifyAdapter getIdentifyAdapter() { return identifyAdapter; }
 
     private List<Multiaddr> getSelfAddresses() {
+        if (host == null) return List.of();
+        List<Multiaddr> addrs = host.listenAddresses();
+        if (addrs != null && !addrs.isEmpty()) return new ArrayList<>(addrs);
         try { return new ArrayList<>(host.getAddressBook().getAddrs(host.getPeerId()).get(2, TimeUnit.SECONDS)); }
         catch (Exception e) { return List.of(); }
     }

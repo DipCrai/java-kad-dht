@@ -1,5 +1,6 @@
 package com.libp2p.kademlia;
 
+import com.libp2p.kademlia.bootstrap.DefaultBootstrapPeers;
 import com.libp2p.kademlia.config.KadConfig;
 import com.libp2p.kademlia.config.KadMode;
 import org.junit.jupiter.api.Test;
@@ -39,7 +40,8 @@ class KadConfigTest {
         assertEquals(1, config.getReadQuorum());
         assertEquals(1, config.getDisjointPaths());
         assertEquals(KadMode.AUTO_SERVER, config.getMode());
-        assertTrue(config.getBootstrapNodes().isEmpty());
+        assertEquals(DefaultBootstrapPeers.DEFAULT_BOOTSTRAP_PEERS.size(), config.getBootstrapNodes().size());
+        assertTrue(config.getBootstrapNodes().containsAll(DefaultBootstrapPeers.DEFAULT_BOOTSTRAP_PEERS));
         assertEquals(Duration.ofMinutes(5), config.getBootstrapAddressTTL());
         assertEquals(Duration.ofMinutes(30), config.getPeerAddressTTL());
     }

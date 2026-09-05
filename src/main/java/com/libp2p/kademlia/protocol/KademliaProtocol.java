@@ -33,6 +33,7 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
     private volatile ProviderStore providerStore;
     private volatile com.libp2p.kademlia.records.RecordValidator validator = com.libp2p.kademlia.records.RecordValidator.NOOP;
     private volatile boolean serverMode = true;
+    private final ConcurrentMap<PeerId, java.util.concurrent.Semaphore> perPeerLocks = new ConcurrentHashMap<>();
 
     public KademliaProtocol(String protocolName, int kValue, Duration substreamTimeout, Duration providerRecordTTL, Duration providerAddrTTL, int maxInboundRequests) {
         this.protocolName = protocolName;
@@ -76,23 +77,57 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
 
     public CompletableFuture<Dht.Message> sendMessage(PeerId peer, Dht.Message msg) {
         return CompletableFuture.supplyAsync(() -> {
+            java.util.concurrent.Semaphore lock = perPeerLocks.computeIfAbsent(peer, p -> new java.util.concurrent.Semaphore(1));
             try {
-                List<Multiaddr> addrs;
-                try {
-                    addrs = new ArrayList<>(host.getAddressBook().getAddrs(peer)
-                            .get(substreamTimeout.toSeconds(), TimeUnit.SECONDS));
-                } catch (Exception e) {
-                    addrs = List.of();
+                if (!lock.tryAcquire(substreamTimeout.toMillis(), TimeUnit.MILLISECONDS)) {
+                    throw new CompletionException(new java.util.concurrent.TimeoutException("peer busy: " + peer));
                 }
-                StreamPromise<KademliaController> promise = host.newStream(List.of(protocolName), peer,
-                        addrs.toArray(new Multiaddr[0]));
-                KademliaController ctrl = promise.getController().get(substreamTimeout.toSeconds(), TimeUnit.SECONDS);
-                if (ctrl == null) throw new IllegalStateException("No controller");
-                return ctrl.sendRequest(msg).get(substreamTimeout.toSeconds(), TimeUnit.SECONDS);
-            } catch (Exception e) {
-                throw new CompletionException(e);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                throw new CompletionException(ie);
+            }
+            try {
+                // Mirror go-libp2p's retry-on-error: when a kad peer silently closes or
+                // ignores a request on the current stream, retry once on a freshly opened
+                // stream (which may land on a new connection). A single retry matches
+                // go-libp2p's message manager behaviour. The per-peer lock serializes
+                // requests to the same peer, as go-libp2p does with its CtxMutex.
+                try {
+                    return sendMessageOnce(peer, msg);
+                } catch (Exception first) {
+                    try {
+                        return sendMessageOnce(peer, msg);
+                    } catch (Exception second) {
+                        throw new CompletionException(second);
+                    }
+                }
+            } finally {
+                lock.release();
             }
         });
+    }
+
+    private Dht.Message sendMessageOnce(PeerId peer, Dht.Message msg) throws Exception {
+        List<Multiaddr> addrs;
+        try {
+            addrs = new ArrayList<>(host.getAddressBook().getAddrs(peer)
+                    .get(substreamTimeout.toSeconds(), TimeUnit.SECONDS));
+        } catch (Exception e) {
+            addrs = List.of();
+        }
+        StreamPromise<KademliaController> promise = host.newStream(List.of(protocolName), peer,
+                addrs.toArray(new Multiaddr[0]));
+        KademliaController ctrl = promise.getController().get(substreamTimeout.toSeconds(), TimeUnit.SECONDS);
+        if (ctrl == null) throw new IllegalStateException("No controller");
+        Dht.Message response;
+        try {
+            response = ctrl.sendRequest(msg).get(substreamTimeout.toSeconds(), TimeUnit.SECONDS);
+        } catch (Exception e) {
+            // close the failed stream so the fresh attempt does not reuse it
+            try { ctrl.close(); } catch (Exception ignore) {}
+            throw e;
+        }
+        return response;
     }
 
     public CompletableFuture<FindNodeResponse> sendFindNode(byte[] key, PeerId peer) {
@@ -132,30 +167,59 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
 
     public CompletableFuture<Boolean> sendMessageFireAndForget(PeerId peer, Dht.Message msg) {
         return CompletableFuture.supplyAsync(() -> {
+            java.util.concurrent.Semaphore lock = perPeerLocks.computeIfAbsent(peer, p -> new java.util.concurrent.Semaphore(1));
             try {
-                List<Multiaddr> addrs;
-                try {
-                    addrs = new ArrayList<>(host.getAddressBook().getAddrs(peer)
-                            .get(substreamTimeout.toSeconds(), TimeUnit.SECONDS));
-                } catch (Exception e) {
-                    addrs = List.of();
+                if (!lock.tryAcquire(substreamTimeout.toMillis(), TimeUnit.MILLISECONDS)) {
+                    throw new CompletionException(new java.util.concurrent.TimeoutException("peer busy: " + peer));
                 }
-                StreamPromise<KademliaController> promise = host.newStream(List.of(protocolName), peer,
-                        addrs.toArray(new Multiaddr[0]));
-                KademliaController ctrl = promise.getController().get(substreamTimeout.toSeconds(), TimeUnit.SECONDS);
-                if (ctrl == null) throw new IllegalStateException("No controller");
-                ctrl.sendRequest(msg);
-                return true;
-            } catch (Exception e) {
-                throw new CompletionException(e);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                throw new CompletionException(ie);
+            }
+            try {
+                try {
+                    fireAndForgetOnce(peer, msg);
+                    return true;
+                } catch (Exception first) {
+                    try {
+                        fireAndForgetOnce(peer, msg);
+                        return true;
+                    } catch (Exception second) {
+                        throw new CompletionException(second);
+                    }
+                }
+            } finally {
+                lock.release();
             }
         });
+    }
+
+    private void fireAndForgetOnce(PeerId peer, Dht.Message msg) throws Exception {
+        List<Multiaddr> addrs;
+        try {
+            addrs = new ArrayList<>(host.getAddressBook().getAddrs(peer)
+                    .get(substreamTimeout.toSeconds(), TimeUnit.SECONDS));
+        } catch (Exception e) {
+            addrs = List.of();
+        }
+        StreamPromise<KademliaController> promise = host.newStream(List.of(protocolName), peer,
+                addrs.toArray(new Multiaddr[0]));
+        KademliaController ctrl = promise.getController().get(substreamTimeout.toSeconds(), TimeUnit.SECONDS);
+        if (ctrl == null) throw new IllegalStateException("No controller");
+        try {
+            ctrl.sendRequest(msg);
+        } catch (Exception e) {
+            try { ctrl.close(); } catch (Exception ignore) {}
+            throw e;
+        }
     }
 
     public CompletableFuture<Boolean> sendAddProvider(byte[] key, PeerId peer) {
         List<Multiaddr> addrs = List.of();
         try { addrs = new ArrayList<>(host.getAddressBook().getAddrs(host.getPeerId()).get(2, TimeUnit.SECONDS)); }
         catch (Exception ignored) {}
+        List<Multiaddr> listens = host.listenAddresses();
+        if ((addrs == null || addrs.isEmpty()) && listens != null) addrs = new ArrayList<>(listens);
         return sendMessageFireAndForget(peer, RpcCodec.addProvider(key, host.getPeerId().getBytes(), addrs));
     }
 
@@ -367,12 +431,16 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
 
     public interface KademliaController {
         CompletableFuture<Dht.Message> sendRequest(Dht.Message msg);
+        CompletableFuture<Void> close();
     }
 
     static class InitiatorHandler extends io.netty.channel.ChannelInboundHandlerAdapter implements KademliaController {
         private final Stream stream;
         private final LinkedBlockingDeque<CompletableFuture<Dht.Message>> pending = new LinkedBlockingDeque<>();
         InitiatorHandler(Stream stream) { this.stream = stream; }
+
+        @Override
+        public CompletableFuture<Void> close() { return stream.close().thenApply(v -> null); }
 
         @Override
         public CompletableFuture<Dht.Message> sendRequest(Dht.Message msg) {
@@ -400,6 +468,9 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
         private final KademliaProtocol proto;
         private final Stream stream;
         ResponderHandler(KademliaProtocol proto, Stream stream) { this.proto = proto; this.stream = stream; }
+
+        @Override
+        public CompletableFuture<Void> close() { return stream.close().thenApply(v -> null); }
 
         @Override
         public void channelRead(io.netty.channel.ChannelHandlerContext ctx, Object msg) {

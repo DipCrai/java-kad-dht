@@ -25,7 +25,7 @@ public final class RpcCodec {
 
     public static Dht.Message findNode(byte[] key) {
         return Dht.Message.newBuilder().setType(Dht.Message.MessageType.FIND_NODE)
-                .setKey(ByteString.copyFrom(key)).setClusterLevelRaw(10).build();
+                .setKey(ByteString.copyFrom(key)).setClusterLevelRaw(1).build();
     }
 
     public static Dht.Message ping() {
@@ -34,7 +34,7 @@ public final class RpcCodec {
 
     public static Dht.Message getValue(byte[] key) {
         return Dht.Message.newBuilder().setType(Dht.Message.MessageType.GET_VALUE)
-                .setKey(ByteString.copyFrom(key)).setClusterLevelRaw(10).build();
+                .setKey(ByteString.copyFrom(key)).setClusterLevelRaw(1).build();
     }
 
     public static Dht.Message putValue(WireRecord record) {
@@ -43,7 +43,7 @@ public final class RpcCodec {
                 .setValue(ByteString.copyFrom(record.getValue()));
         return Dht.Message.newBuilder().setType(Dht.Message.MessageType.PUT_VALUE)
                 .setKey(ByteString.copyFrom(record.getKey()))
-                .setRecord(rb.build()).setClusterLevelRaw(10).build();
+                .setRecord(rb.build()).setClusterLevelRaw(1).build();
     }
 
     public static Dht.Message addProvider(byte[] key, byte[] selfPeerId, java.util.List<io.libp2p.core.multiformats.Multiaddr> addrs) {
@@ -56,12 +56,12 @@ public final class RpcCodec {
             }
         }
         return Dht.Message.newBuilder().setType(Dht.Message.MessageType.ADD_PROVIDER)
-                .setKey(ByteString.copyFrom(key)).addProviderPeers(peerBuilder.build()).setClusterLevelRaw(10).build();
+                .setKey(ByteString.copyFrom(key)).addProviderPeers(peerBuilder.build()).setClusterLevelRaw(1).build();
     }
 
     public static Dht.Message getProviders(byte[] key) {
         return Dht.Message.newBuilder().setType(Dht.Message.MessageType.GET_PROVIDERS)
-                .setKey(ByteString.copyFrom(key)).setClusterLevelRaw(10).build();
+                .setKey(ByteString.copyFrom(key)).setClusterLevelRaw(1).build();
     }
 
     public static Dht.Message pong() {
