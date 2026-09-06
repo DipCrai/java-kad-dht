@@ -161,6 +161,7 @@ class ClientServerLifecycleTest {
                     .mode(KadMode.SERVER)
                     .kValue(20)
                     .queryTimeout(Duration.ofSeconds(15))
+                    .httpBootstrapFallback(false)
                     .bootstrapNodes(List.of(bootstrap.addr))
                     .build());
             Host freshHost = new HostBuilder()

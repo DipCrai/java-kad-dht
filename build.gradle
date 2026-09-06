@@ -67,3 +67,44 @@ publishing {
         }
     }
 }
+
+tasks.register('kadSingleNodeProbe', JavaExec) {
+    group = 'verification'
+    description = 'temp: single host, per-seed FIND_NODE to test kad interop'
+    classpath = sourceSets.main.runtimeClasspath + sourceSets.test.runtimeClasspath
+    mainClass = 'com.libp2p.kademlia.KadSingleNodeProbe'
+    jvmArgs "-Dkad.extra=${System.getProperty('kad.extra','')}"
+}
+
+tasks.register('kadCrawlProbe', JavaExec) {
+    group = 'verification'
+    description = 'temp: iterative kad crawl to prove liveliness auto-growth'
+    classpath = sourceSets.main.runtimeClasspath + sourceSets.test.runtimeClasspath
+    mainClass = 'com.libp2p.kademlia.KadCrawlProbe'
+    jvmArgs "-Dkad.extra=${System.getProperty('kad.extra','')}"
+    jvmArgs "-Dkad.levels=${System.getProperty('kad.levels','1')}"
+    jvmArgs "-Dkad.perlevel=${System.getProperty('kad.perlevel','25')}"
+}
+
+tasks.register('kadOfficialProbe', JavaExec) {
+    group = 'verification'
+    description = 'temp: deep diagnosis of kad RPC against official bootstrap nodes'
+    classpath = sourceSets.main.runtimeClasspath + sourceSets.test.runtimeClasspath
+    mainClass = 'com.libp2p.kademlia.KadOfficialProbe'
+    jvmArgs "-Dkad.extra=${System.getProperty('kad.extra','')}"
+}
+
+tasks.register('kadHttpE2EProbe', JavaExec) {
+    group = 'verification'
+    description = 'temp: provider round-trip A provide -> B findProviders over public DHT'
+    classpath = sourceSets.main.runtimeClasspath + sourceSets.test.runtimeClasspath
+    mainClass = 'com.libp2p.kademlia.HttpBootstrapE2EProbe'
+}
+
+tasks.register('kadHttpFallbackProbe', JavaExec) {
+    group = 'verification'
+    description = 'temp: e2e bootstrap via HTTPS routing fallback (no VPN required)'
+    classpath = sourceSets.main.runtimeClasspath + sourceSets.test.runtimeClasspath
+    mainClass = 'com.libp2p.kademlia.HttpBootstrapFallbackProbe'
+    jvmArgs "-Dkad.empty=${System.getProperty('kad.empty','false')}"
+}

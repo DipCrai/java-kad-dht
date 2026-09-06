@@ -3,6 +3,7 @@ package com.libp2p.kademlia.config;
 import com.libp2p.kademlia.bootstrap.DefaultBootstrapPeers;
 import com.libp2p.kademlia.query.QueryFilter;
 import com.libp2p.kademlia.records.RecordValidator;
+import com.libp2p.kademlia.refresh.HttpBootstrapPeerSource;
 import com.libp2p.kademlia.routing.AdmissionCheck;
 import com.libp2p.kademlia.routing.DefaultPeerDiversityPolicy;
 import com.libp2p.kademlia.routing.PeerDiversityPolicy;
@@ -65,6 +66,11 @@ public class KadConfig {
     private final AdmissionCheck admissionCheck;
     private final Duration bootstrapAddressTTL;
     private final Duration peerAddressTTL;
+    private final boolean httpBootstrapFallback;
+    private final List<String> httpBootstrapRouters;
+    private final Duration httpBootstrapTimeout;
+    private final int httpBootstrapLookupKeys;
+    private final int httpBootstrapDialLimit;
 
     private KadConfig(Builder builder) {
         this.protocolName = builder.protocolName;
@@ -100,6 +106,11 @@ public class KadConfig {
         this.admissionCheck = builder.admissionCheck;
         this.bootstrapAddressTTL = builder.bootstrapAddressTTL;
         this.peerAddressTTL = builder.peerAddressTTL;
+        this.httpBootstrapFallback = builder.httpBootstrapFallback;
+        this.httpBootstrapRouters = Collections.unmodifiableList(new ArrayList<>(builder.httpBootstrapRouters));
+        this.httpBootstrapTimeout = builder.httpBootstrapTimeout;
+        this.httpBootstrapLookupKeys = builder.httpBootstrapLookupKeys;
+        this.httpBootstrapDialLimit = builder.httpBootstrapDialLimit;
     }
 
     /** @return the Kademlia protocol ID (default: /ipfs/kad/1.0.0) */
@@ -201,6 +212,27 @@ public class KadConfig {
     /** @return the peer address TTL (default: 30min) */
     public Duration getPeerAddressTTL() { return peerAddressTTL; }
 
+    /**
+     * @return whether an HTTPS routing-server bootstrap fallback should be used
+     * when the configured real bootstrap peers are unusable (default: {@code true})
+     */
+    public boolean isHttpBootstrapFallback() { return httpBootstrapFallback; }
+
+    /**
+     * @return the public HTTP Routing V1 servers used to fetch the first live kad
+     * peer addresses (e.g. {@code https://delegated-ipfs.dev/routing/v1})
+     */
+    public List<String> getHttpBootstrapRouters() { return httpBootstrapRouters; }
+
+    /** @return the per-request timeout for routing-server lookups (default: 15s) */
+    public Duration getHttpBootstrapTimeout() { return httpBootstrapTimeout; }
+
+    /** @return the number of lookup keys queried per router (default: 3) */
+    public int getHttpBootstrapLookupKeys() { return httpBootstrapLookupKeys; }
+
+    /** @return the max number of fallback peers dialed per bootstrap (default: 25) */
+    public int getHttpBootstrapDialLimit() { return httpBootstrapDialLimit; }
+
     public static Builder builder() {
         return new Builder();
     }
@@ -240,6 +272,11 @@ public class KadConfig {
         private AdmissionCheck admissionCheck = AdmissionCheck.ALLOW_ALL;
         private Duration bootstrapAddressTTL = Duration.ofMinutes(5);
         private Duration peerAddressTTL = Duration.ofMinutes(30);
+        private boolean httpBootstrapFallback = true;
+        private List<String> httpBootstrapRouters = new ArrayList<>(HttpBootstrapPeerSource.DEFAULT_ROUTERS);
+        private Duration httpBootstrapTimeout = Duration.ofSeconds(15);
+        private int httpBootstrapLookupKeys = 3;
+        private int httpBootstrapDialLimit = 25;
 
         private Builder() {}
 
@@ -276,6 +313,11 @@ public class KadConfig {
         public Builder admissionCheck(AdmissionCheck admissionCheck) { this.admissionCheck = admissionCheck; return this; }
         public Builder bootstrapAddressTTL(Duration bootstrapAddressTTL) { this.bootstrapAddressTTL = bootstrapAddressTTL; return this; }
         public Builder peerAddressTTL(Duration peerAddressTTL) { this.peerAddressTTL = peerAddressTTL; return this; }
+        public Builder httpBootstrapFallback(boolean httpBootstrapFallback) { this.httpBootstrapFallback = httpBootstrapFallback; return this; }
+        public Builder httpBootstrapRouters(List<String> httpBootstrapRouters) { this.httpBootstrapRouters = new ArrayList<>(httpBootstrapRouters); return this; }
+        public Builder httpBootstrapTimeout(Duration httpBootstrapTimeout) { this.httpBootstrapTimeout = httpBootstrapTimeout; return this; }
+        public Builder httpBootstrapLookupKeys(int httpBootstrapLookupKeys) { this.httpBootstrapLookupKeys = httpBootstrapLookupKeys; return this; }
+        public Builder httpBootstrapDialLimit(int httpBootstrapDialLimit) { this.httpBootstrapDialLimit = httpBootstrapDialLimit; return this; }
 
         public KadConfig build() {
             if (kValue <= 0) throw new IllegalArgumentException("kValue must be > 0, got " + kValue);
@@ -300,6 +342,14 @@ public class KadConfig {
             if (recordPublicationInterval == null || recordPublicationInterval.isNegative() || recordPublicationInterval.isZero()) throw new IllegalArgumentException("recordPublicationInterval must be positive");
             if (providerPublicationInterval == null || providerPublicationInterval.isNegative() || providerPublicationInterval.isZero()) throw new IllegalArgumentException("providerPublicationInterval must be positive");
             if (disjointPaths < 1) throw new IllegalArgumentException("disjointPaths must be >= 1, got " + disjointPaths);
+            if (httpBootstrapFallback && httpBootstrapRouters.isEmpty()) {
+                throw new IllegalArgumentException("httpBootstrapRouters must not be empty when httpBootstrapFallback is enabled");
+            }
+            if (httpBootstrapTimeout == null || httpBootstrapTimeout.isNegative() || httpBootstrapTimeout.isZero()) {
+                throw new IllegalArgumentException("httpBootstrapTimeout must be positive");
+            }
+            if (httpBootstrapLookupKeys < 1) throw new IllegalArgumentException("httpBootstrapLookupKeys must be >= 1, got " + httpBootstrapLookupKeys);
+            if (httpBootstrapDialLimit < 1) throw new IllegalArgumentException("httpBootstrapDialLimit must be >= 1, got " + httpBootstrapDialLimit);
             return new KadConfig(this);
         }
     }

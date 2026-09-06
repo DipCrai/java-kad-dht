@@ -7,6 +7,7 @@ import com.libp2p.kademlia.lookup.QueryScheduler;
 import com.libp2p.kademlia.metrics.KadMetrics;
 import com.libp2p.kademlia.peer.PeerTracker;
 import com.libp2p.kademlia.protocol.KademliaProtocol;
+import com.libp2p.kademlia.protocol.KademliaProtocol.GetProvidersResponse;
 import com.libp2p.kademlia.query.DefaultQueryFilter;
 import com.libp2p.kademlia.query.QueryFilter;
 import com.libp2p.kademlia.records.MemoryRecordStore;
@@ -19,6 +20,7 @@ import com.libp2p.kademlia.records.ProviderRecord;
 import com.libp2p.kademlia.records.RecordReplicationManager;
 import com.libp2p.kademlia.records.ProviderReprovideManager;
 import com.libp2p.kademlia.refresh.BootstrapManager;
+import com.libp2p.kademlia.refresh.HttpBootstrapPeerSource;
 import com.libp2p.kademlia.refresh.RoutingTableRefresh;
 import com.libp2p.kademlia.routing.KadPeer;
 import com.libp2p.kademlia.routing.RoutingTable;
@@ -73,6 +75,7 @@ public class KadDht {
     private final IdentifyAdapter identifyAdapter;
     private final BootstrapManager bootstrapManager;
     private final RoutingTableRefresh rtRefresh;
+    private final HttpBootstrapPeerSource httpSource;
     private RecordReplicationManager recordReplicationManager;
     private ProviderReprovideManager providerReprovideManager;
     private volatile Host host;
@@ -126,7 +129,11 @@ public class KadDht {
 
         this.identifyAdapter = new IdentifyAdapter(routingTable, null, config.getProtocolName());
         this.identifyAdapter.setDiversityPolicy(config.getPeerDiversityPolicy());
-        this.bootstrapManager = new BootstrapManager(routingTable, null, config.getBootstrapNodes(), config.getSubstreamTimeout(), config.getQueryTimeout(), config.getBootstrapAddressTTL().toMillis());
+        this.httpSource = config.isHttpBootstrapFallback()
+                ? new HttpBootstrapPeerSource(config.getHttpBootstrapRouters(), config.getHttpBootstrapTimeout(), config.getHttpBootstrapLookupKeys(), config.getHttpBootstrapDialLimit())
+                : null;
+        this.bootstrapManager = new BootstrapManager(routingTable, null, config.getBootstrapNodes(), config.getSubstreamTimeout(), config.getQueryTimeout(), config.getBootstrapAddressTTL().toMillis(),
+                httpSource, config.isHttpBootstrapFallback(), config.getHttpBootstrapDialLimit());
         this.rtRefresh = new RoutingTableRefresh(routingTable, null, config.getBootstrapInterval(), config.getPendingTimeout());
         this.rtRefresh.setProtocol(protocol);
 
@@ -155,6 +162,17 @@ public class KadDht {
         config.getPeerDiversityPolicy().setHost(host);
         bootstrapManager.setHost(host);
         bootstrapManager.setFindNodeFn(target -> iterativeLookup(target, target).thenApply(v -> null));
+        bootstrapManager.setKadCheckFn((peerId, key) ->
+                protocol.sendFindNode(key, peerId).handle((r, ex) -> ex == null));
+        bootstrapManager.setPromoteFn((peerId, key) ->
+                protocol.sendFindNode(key, peerId).handle((r, ex) -> {
+                    if (r != null && r.closerPeers() != null) {
+                        for (KadPeer p : r.closerPeers()) {
+                            routingTable.insert(p.nodeId, p.multiaddrs);
+                        }
+                    }
+                    return null;
+                }));
         rtRefresh.setHost(host);
     }
 
@@ -475,7 +493,7 @@ public class KadDht {
      * @return future completing with true on success
      */
     public CompletableFuture<Boolean> provide(byte[] key) {
-        return iterativeLookup(XorId.fromKey(key), key)
+        CompletableFuture<Boolean> kad = iterativeLookup(XorId.fromKey(key), key)
                 .thenCompose(lookup -> {
                     List<KadPeer> closest = lookup.getClosestPeers();
                     if (closest.isEmpty()) return CompletableFuture.completedFuture(true);
@@ -489,25 +507,177 @@ public class KadDht {
                     for (KadPeer p : closest) futures.add(protocol.sendAddProvider(key, p.nodeId));
                     return CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).thenApply(v -> true);
                 });
+        // The HTTP responsables are the decisive fast path: a successful write to any
+        // of them lands on peers every caller can reach for this exact key. The kad
+        // crawl keeps running in the background for extra replication.
+        return announceViaHttp(key).thenCompose(ok -> ok
+                ? CompletableFuture.completedFuture(true)
+                : kad.orTimeout(10, TimeUnit.SECONDS).exceptionally(ex -> false));
     }
 
     /**
      * Find providers for a given key.
-     * Performs an iterative GET_PROVIDERS lookup and merges with local provider store.
+     * Performs an iterative GET_PROVIDERS lookup merged with the local provider
+     * store and, when the HTTP fallback is enabled, with the public routing
+     * servers' responsables for that key (the same dialable peers every caller
+     * reaches for this exact key, so records are found even in networks where
+     * the generic closest-peers crawl dead-ends on the key's region). Whichever
+     * path returns a non-empty answer first wins.
      *
      * @param key the content key
      * @return future containing all known provider records for the key
      */
     public CompletableFuture<List<ProviderRecord>> findProviders(byte[] key) {
-        return iterativeGetProvidersLookup(XorId.fromKey(key), key)
+        CompletableFuture<List<ProviderRecord>> kad = iterativeGetProvidersLookup(XorId.fromKey(key), key)
+                .orTimeout(15, TimeUnit.SECONDS)
                 .thenApply(result -> {
+                    if (result == null) return List.<ProviderRecord>of();
                     List<ProviderRecord> local = providerStore.getProviders(key);
                     List<ProviderRecord> all = new ArrayList<>(result.getProviders());
                     for (ProviderRecord pr : local) {
                         if (!all.stream().anyMatch(p -> p.getProvider().equals(pr.getProvider()))) all.add(pr);
                     }
                     return all;
+                })
+                .exceptionally(ex -> List.of());
+        return raceProviders(kad, findProvidersViaHttp(key));
+    }
+
+    private static CompletableFuture<List<ProviderRecord>> raceProviders(
+            CompletableFuture<List<ProviderRecord>> kad, CompletableFuture<List<ProviderRecord>> http) {
+        CompletableFuture<List<ProviderRecord>> result = new CompletableFuture<>();
+        AtomicInteger done = new AtomicInteger(0);
+        for (CompletableFuture<List<ProviderRecord>> f : List.of(kad, http)) {
+            f.whenComplete((r, ex) -> {
+                if (!result.isDone() && ex == null && r != null && !r.isEmpty()) {
+                    result.complete(r);
+                    return;
+                }
+                if (done.incrementAndGet() == 2 && !result.isDone()) {
+                    List<ProviderRecord> a = kad.isCompletedExceptionally() ? List.of() : kad.join();
+                    List<ProviderRecord> b = http.isCompletedExceptionally() ? List.of() : http.join();
+                    result.complete(mergeProviders(a, b));
+                }
+            });
+        }
+        return result;
+    }
+
+    private static List<ProviderRecord> mergeProviders(List<ProviderRecord> a, List<ProviderRecord> b) {
+        List<ProviderRecord> merged = new ArrayList<>(a);
+        for (ProviderRecord pr : b) {
+            if (!merged.stream().anyMatch(p -> p.getProvider().equals(pr.getProvider()))) merged.add(pr);
+        }
+        return merged;
+    }
+
+    private static final Duration RESPONSABLES_TTL = Duration.ofMinutes(5);
+    private static final Duration RESPONSABLE_DIAL_TIMEOUT = Duration.ofSeconds(8);
+    private final java.util.Map<String, RespCacheEntry> responsablesCache = new java.util.concurrent.ConcurrentHashMap<>();
+
+    private record RespCacheEntry(List<Multiaddr> addrs, long expiresAtMillis) {}
+
+    /**
+     * Fetches (with a short-lived cache) the dialable responsables for a content
+     * key from the HTTP routing servers. Deterministic per key, so every caller
+     * coordinates on the same candidate peers.
+     */
+    private CompletableFuture<List<Multiaddr>> httpResponsables(byte[] dhtKey) {
+        if (httpSource == null) return CompletableFuture.completedFuture(List.of());
+        String cacheKey = java.util.Base64.getEncoder().encodeToString(dhtKey);
+        RespCacheEntry entry = responsablesCache.get(cacheKey);
+        if (entry != null && System.currentTimeMillis() < entry.expiresAtMillis()) {
+            return CompletableFuture.completedFuture(entry.addrs());
+        }
+        return httpSource.fetchForDhtKey(dhtKey).thenApply(addrs -> {
+            responsablesCache.put(cacheKey, new RespCacheEntry(addrs, System.currentTimeMillis() + RESPONSABLES_TTL.toMillis()));
+            return addrs;
+        });
+    }
+
+    private CompletableFuture<Boolean> announceViaHttp(byte[] key) {
+        if (host == null) return CompletableFuture.completedFuture(false);
+        return httpResponsables(key).thenCompose(addrs -> {
+            if (addrs.isEmpty()) return CompletableFuture.completedFuture(false);
+            java.util.Set<PeerId> dialed = java.util.concurrent.ConcurrentHashMap.newKeySet();
+            List<CompletableFuture<Boolean>> futures = new ArrayList<>();
+            for (Multiaddr m : addrs) {
+                try {
+                    String[] parts = m.toString().split("/p2p/");
+                    if (parts.length < 2) continue;
+                    PeerId pid = PeerId.fromBase58(parts[1]);
+                    if (!dialed.add(pid)) continue;
+                    host.getAddressBook().addAddrs(pid, config.getBootstrapAddressTTL().toMillis(), m);
+                    futures.add(host.getNetwork().connect(pid, m)
+                            .orTimeout(RESPONSABLE_DIAL_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)
+                            .thenCompose(c -> protocol.sendAddProvider(key, pid))
+                            .orTimeout(3000, TimeUnit.MILLISECONDS)
+                            .exceptionally(ex -> false));
+                } catch (Exception ignored) {}
+            }
+            if (futures.isEmpty()) return CompletableFuture.completedFuture(false);
+            return anySucceeded(futures);
+        });
+    }
+
+    /** Completes true as soon as one future reports success, else false when all are done. */
+    private static CompletableFuture<Boolean> anySucceeded(List<CompletableFuture<Boolean>> futures) {
+        CompletableFuture<Boolean> result = new CompletableFuture<>();
+        AtomicInteger remaining = new AtomicInteger(futures.size());
+        for (CompletableFuture<Boolean> f : futures) {
+            f.whenComplete((ok, ex) -> {
+                if (result.isDone()) return;
+                if (Boolean.TRUE.equals(ok)) result.complete(true);
+                else if (remaining.decrementAndGet() == 0) result.complete(false);
+            });
+        }
+        return result;
+    }
+
+    private CompletableFuture<List<ProviderRecord>> findProvidersViaHttp(byte[] key) {
+        if (host == null) return CompletableFuture.completedFuture(List.of());
+        return httpResponsables(key).thenCompose(addrs -> {
+            java.util.Set<PeerId> dialed = java.util.concurrent.ConcurrentHashMap.newKeySet();
+            List<CompletableFuture<List<ProviderRecord>>> futures = new ArrayList<>();
+            for (Multiaddr m : addrs) {
+                try {
+                    String[] parts = m.toString().split("/p2p/");
+                    if (parts.length < 2) continue;
+                    PeerId pid = PeerId.fromBase58(parts[1]);
+                    if (!dialed.add(pid)) continue;
+                    host.getAddressBook().addAddrs(pid, config.getBootstrapAddressTTL().toMillis(), m);
+                    futures.add(connectAndGetProviders(key, pid, m));
+                } catch (Exception ignored) {}
+            }
+            if (futures.isEmpty()) return CompletableFuture.completedFuture(List.of());
+            CompletableFuture<List<ProviderRecord>> result = new CompletableFuture<>();
+            AtomicInteger remaining = new AtomicInteger(futures.size());
+            for (CompletableFuture<List<ProviderRecord>> f : futures) {
+                f.whenComplete((provs, ex) -> {
+                    if (result.isDone()) return;
+                    if (ex == null && provs != null && !provs.isEmpty()) {
+                        result.complete(provs);
+                    } else if (remaining.decrementAndGet() == 0) {
+                        result.complete(List.of());
+                    }
                 });
+            }
+            return result;
+        });
+    }
+
+    private CompletableFuture<List<ProviderRecord>> connectAndGetProviders(byte[] key, PeerId pid, Multiaddr m) {
+        return host.getNetwork().connect(pid, m)
+                .thenCompose(c -> protocol.sendGetProviders(key, pid))
+                .orTimeout(RESPONSABLE_DIAL_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)
+                .thenApply(r -> {
+                    if (r.closerPeers() != null) {
+                        for (KadPeer p : r.closerPeers()) routingTable.insert(p.nodeId, p.multiaddrs);
+                    }
+                    List<ProviderRecord> provs = new ArrayList<>(r.providers());
+                    return provs;
+                })
+                .exceptionally(ex -> List.<ProviderRecord>of());
     }
 
     private CompletableFuture<IterativeLookup> iterativeLookup(byte[] target, byte[] wireTarget) {
