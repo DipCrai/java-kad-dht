@@ -19,9 +19,10 @@ import com.libp2p.kademlia.records.ProviderRecord;
 import com.libp2p.kademlia.records.RecordReplicationManager;
 import com.libp2p.kademlia.records.ProviderReprovideManager;
 import com.libp2p.kademlia.refresh.BootstrapManager;
-import com.libp2p.kademlia.refresh.HttpBootstrapPeerSource;
-import com.libp2p.kademlia.refresh.HttpDelegatedRouting;
+import com.libp2p.kademlia.refresh.DelegatedRoutingFactory;
+import com.libp2p.kademlia.refresh.PeerSource;
 import com.libp2p.kademlia.refresh.RoutingTableRefresh;
+import com.libp2p.kademlia.routing.DelegatedRouting;
 import com.libp2p.kademlia.routing.KadPeer;
 import com.libp2p.kademlia.routing.ProviderRoutingCoordinator;
 import com.libp2p.kademlia.routing.RoutingTable;
@@ -76,8 +77,8 @@ public class KadDht {
     private final IdentifyAdapter identifyAdapter;
     private final BootstrapManager bootstrapManager;
     private final RoutingTableRefresh rtRefresh;
-    private final HttpBootstrapPeerSource httpSource;
-    private final HttpDelegatedRouting httpDelegatedRouting;
+    private final PeerSource httpSource;
+    private final DelegatedRouting httpDelegatedRouting;
     private final ProviderRoutingCoordinator providerCoordinator;
     private RecordReplicationManager recordReplicationManager;
     private ProviderReprovideManager providerReprovideManager;
@@ -132,13 +133,10 @@ public class KadDht {
 
         this.identifyAdapter = new IdentifyAdapter(routingTable, null, config.getProtocolName());
         this.identifyAdapter.setDiversityPolicy(config.getPeerDiversityPolicy());
-        this.httpSource = config.isHttpBootstrapFallback()
-                ? new HttpBootstrapPeerSource(config.getHttpBootstrapRouters(), config.getHttpBootstrapTimeout(), config.getHttpBootstrapLookupKeys(), config.getHttpBootstrapDialLimit())
-                : null;
-        this.httpDelegatedRouting = config.isHttpBootstrapFallback()
-                ? new HttpDelegatedRouting(httpSource, protocol, routingTable, config.getBootstrapAddressTTL())
-                : null;
-        this.providerCoordinator = new ProviderRoutingCoordinator(this::provideViaKad, this::findProvidersViaKad, httpDelegatedRouting);
+        this.httpSource = config.getPeerSource();
+        this.httpDelegatedRouting = null; // built in setHost() once the host is known
+        this.providerCoordinator = new ProviderRoutingCoordinator(this::provideViaKad, this::findProvidersViaKad, null,
+                config.getProviderProvideTimeout(), config.getProviderFindTimeout(), config.getProviderMergeGrace());
         this.bootstrapManager = new BootstrapManager(routingTable, null, config.getBootstrapNodes(), config.getSubstreamTimeout(), config.getQueryTimeout(), config.getBootstrapAddressTTL().toMillis(),
                 httpSource, config.isHttpBootstrapFallback(), config.getHttpBootstrapDialLimit());
         this.rtRefresh = new RoutingTableRefresh(routingTable, null, config.getBootstrapInterval(), config.getPendingTimeout());
@@ -181,7 +179,15 @@ public class KadDht {
                     return null;
                 }));
         rtRefresh.setHost(host);
-        if (httpDelegatedRouting != null) httpDelegatedRouting.setHost(host);
+        // composition root: build the delegated routing path here, never hand the
+        // HTTP implementation into the coordinator — only the DelegatedRouting
+        // abstraction and its PeerSource are wired in
+        DelegatedRouting delegated = null;
+        if (config.isHttpBootstrapFallback() && httpSource != null) {
+            DelegatedRoutingFactory factory = config.getDelegatedRoutingFactory();
+            delegated = factory.create(httpSource, protocol, routingTable, config.getBootstrapAddressTTL(), host);
+        }
+        providerCoordinator.setDelegated(delegated);
     }
 
     /**
@@ -466,13 +472,29 @@ public class KadDht {
         byte[] distanceTarget = XorId.fromKey(record.getKey());
         List<KadPeer> closest = routingTable.findClosest(distanceTarget, config.getReplicationFactor());
         if (closest.isEmpty()) return CompletableFuture.completedFuture(true);
+        int quorum = Math.min(config.getWriteQuorum(), closest.size());
+        AtomicInteger successCount = new AtomicInteger();
         List<CompletableFuture<Boolean>> futures = new ArrayList<>();
         for (KadPeer p : closest) {
-            futures.add(protocol.sendPutValue(record, p.nodeId));
+            CompletableFuture<Boolean> f = protocol.sendPutValue(record, p.nodeId)
+                    .thenApply(ok -> { if (ok) successCount.incrementAndGet(); return ok; })
+                    .exceptionally(ex -> false);
+            futures.add(f);
         }
         return CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).thenApply(v -> {
-            metrics.replicationSuccess.incrementAndGet();
-            return true;
+            int s = successCount.get();
+            if (s >= quorum) {
+                metrics.recordReplicationSuccess();
+                metrics.recordQuorumAchieved();
+                return true;
+            }
+            // partial failure: some peers got the record even though the quorum
+            // did not; report it separately instead of collapsing to a blanket
+            // failure (#5)
+            if (s > 0) metrics.recordReplicationPartial();
+            else metrics.recordReplicationFailure();
+            metrics.recordQuorumFailed();
+            return false;
         });
     }
 
@@ -510,20 +532,48 @@ public class KadDht {
         return providerCoordinator.provide(key);
     }
 
-    private CompletableFuture<Boolean> provideViaKad(byte[] key) {
+    private CompletableFuture<ProviderRoutingCoordinator.AnnounceResult> provideViaKad(byte[] key) {
         return iterativeLookup(XorId.fromKey(key), key)
                 .thenCompose(lookup -> {
-                    List<KadPeer> closest = lookup.getClosestPeers();
-                    if (closest.isEmpty()) return CompletableFuture.completedFuture(true);
-
+                    // The local provider record is stored regardless of how many
+                    // peers the lookup found — "I provide this key" is true even
+                    // before anyone has been announced to.
                     ProviderRecord local = new ProviderRecord(key, host.getPeerId(),
                             Instant.now().plus(config.getProviderRecordTTL()), Instant.now().plus(config.getProviderAddrTTL()), getSelfAddresses());
                     providerStore.addProvider(local);
                     metrics.providersStored.incrementAndGet();
 
-                    List<CompletableFuture<Boolean>> futures = new ArrayList<>();
-                    for (KadPeer p : closest) futures.add(protocol.sendAddProvider(key, p.nodeId));
-                    return CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).thenApply(v -> true);
+                    List<KadPeer> closest = lookup.getClosestPeers();
+                    if (closest.isEmpty()) {
+                        // empty routing table: nothing was announced anywhere, so
+                        // this path must not report false success (#2)
+                        return CompletableFuture.completedFuture(new ProviderRoutingCoordinator.AnnounceResult(false, 0, 0));
+                    }
+
+                    // quorum-based announce (#4): writeQuorum ACKs are enough for
+                    // this path to count as succeeded; the rest keep running in
+                    // the background instead of failing the whole announce
+                    int quorum = Math.min(config.getWriteQuorum(), closest.size());
+                    AtomicInteger successCount = new AtomicInteger();
+                    List<CompletableFuture<Boolean>> sends = new ArrayList<>();
+                    for (KadPeer p : closest) {
+                        sends.add(protocol.sendAddProvider(key, p.nodeId)
+                                .thenApply(ok -> { if (ok) successCount.incrementAndGet(); return ok; })
+                                .exceptionally(ex -> false));
+                    }
+                    CompletableFuture<ProviderRoutingCoordinator.AnnounceResult> done = new CompletableFuture<>();
+                    for (CompletableFuture<Boolean> f : sends) {
+                        f.whenComplete((ok, ex) -> {
+                            if (done.isDone()) return;
+                            int s = successCount.get();
+                            if (s >= quorum) {
+                                done.complete(new ProviderRoutingCoordinator.AnnounceResult(true, closest.size(), s));
+                            } else if (sends.stream().allMatch(CompletableFuture::isDone)) {
+                                done.complete(new ProviderRoutingCoordinator.AnnounceResult(s >= quorum, closest.size(), s));
+                            }
+                        });
+                    }
+                    return done;
                 });
     }
 

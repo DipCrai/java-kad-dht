@@ -83,6 +83,22 @@ public class RoutingTable {
         return outcome == InsertOutcome.INSERTED || outcome == InsertOutcome.UPDATED || outcome.needsPing();
     }
 
+    /**
+     * Single admission point for peers discovered through the delegated HTTP
+     * routing path. Unlike {@link #insert}, which is used for kad-native and
+     * bootstrap discovery, the delegated backend is an external HTTP server we
+     * trust no more than any remote DHT peer: the configured
+     * {@link AdmissionCheck} (diversity, deny-list, ...) is applied before the
+     * peer is admitted into the routing table. Falls back to a plain insert
+     * when no admission check is configured.
+     *
+     * @return future completing with {@code true} when the peer was admitted and
+     *         inserted
+     */
+    public CompletableFuture<Boolean> insertDiscovered(PeerId peerId, List<Multiaddr> addresses) {
+        return insertWithAdmissionCheck(peerId, addresses);
+    }
+
     public CompletableFuture<Boolean> insertWithAdmissionCheck(PeerId peerId, List<Multiaddr> addresses) {
         if (admissionCheck == null || admissionCheck == AdmissionCheck.ALLOW_ALL) {
             return CompletableFuture.completedFuture(insert(peerId, addresses));

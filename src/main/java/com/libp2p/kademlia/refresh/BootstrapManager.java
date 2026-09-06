@@ -34,7 +34,7 @@ public class BootstrapManager {
     private final Duration connectTimeout;
     private final Duration queryTimeout;
     private final long bootstrapAddressTTL;
-    private final HttpBootstrapPeerSource httpSource;
+    private final PeerSource httpSource;
     private final boolean httpFallbackEnabled;
     private final int httpDialLimit;
     private volatile BootstrapState state = BootstrapState.NOT_STARTED;
@@ -52,7 +52,7 @@ public class BootstrapManager {
     }
 
     public BootstrapManager(RoutingTable routingTable, Host host, List<Multiaddr> bootstrapNodes, Duration connectTimeout, Duration queryTimeout, long bootstrapAddressTTL,
-                            HttpBootstrapPeerSource httpSource, boolean httpFallbackEnabled, int httpDialLimit) {
+                            PeerSource httpSource, boolean httpFallbackEnabled, int httpDialLimit) {
         this.routingTable = routingTable;
         this.host = host;
         this.bootstrapNodes = bootstrapNodes;

@@ -181,7 +181,9 @@ public class IterativeLookup {
         if (lookupRoutingTable != null) {
             Boolean kadSupport = identifyAdapter != null ? identifyAdapter.getKadServerSupport(peerId) : null;
             if (kadSupport != null && kadSupport) {
-                lookupRoutingTable.insert(peerId, addrs != null ? addrs : List.of());
+                // single admission point shared with the delegated routing path
+                lookupRoutingTable.insertDiscovered(peerId, addrs != null ? addrs : List.of())
+                        .exceptionally(ex -> false);
             }
         }
     }

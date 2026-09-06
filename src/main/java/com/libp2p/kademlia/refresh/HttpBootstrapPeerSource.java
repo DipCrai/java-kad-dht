@@ -45,7 +45,7 @@ import java.util.regex.Pattern;
  *
  * @see <a href="https://specs.ipfs.tech/routing/http-routing-v1/">HTTP Routing V1 spec</a>
  */
-public class HttpBootstrapPeerSource {
+public class HttpBootstrapPeerSource implements PeerSource {
 
     public static final String DEFAULT_ROUTER = "https://delegated-ipfs.dev/routing/v1";
     public static final String DEFAULT_ROUTER_FALLBACK = "https://cid.contact/routing/v1";

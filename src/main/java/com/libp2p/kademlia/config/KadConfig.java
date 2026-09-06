@@ -3,7 +3,10 @@ package com.libp2p.kademlia.config;
 import com.libp2p.kademlia.bootstrap.DefaultBootstrapPeers;
 import com.libp2p.kademlia.query.QueryFilter;
 import com.libp2p.kademlia.records.RecordValidator;
+import com.libp2p.kademlia.refresh.DelegatedRoutingFactory;
 import com.libp2p.kademlia.refresh.HttpBootstrapPeerSource;
+import com.libp2p.kademlia.refresh.HttpDelegatedRouting;
+import com.libp2p.kademlia.refresh.PeerSource;
 import com.libp2p.kademlia.routing.AdmissionCheck;
 import com.libp2p.kademlia.routing.DefaultPeerDiversityPolicy;
 import com.libp2p.kademlia.routing.PeerDiversityPolicy;
@@ -71,6 +74,11 @@ public class KadConfig {
     private final Duration httpBootstrapTimeout;
     private final int httpBootstrapLookupKeys;
     private final int httpBootstrapDialLimit;
+    private final Duration providerProvideTimeout;
+    private final Duration providerFindTimeout;
+    private final Duration providerMergeGrace;
+    private final DelegatedRoutingFactory delegatedRoutingFactory;
+    private final PeerSource peerSource;
 
     private KadConfig(Builder builder) {
         this.protocolName = builder.protocolName;
@@ -111,6 +119,13 @@ public class KadConfig {
         this.httpBootstrapTimeout = builder.httpBootstrapTimeout;
         this.httpBootstrapLookupKeys = builder.httpBootstrapLookupKeys;
         this.httpBootstrapDialLimit = builder.httpBootstrapDialLimit;
+        this.providerProvideTimeout = builder.providerProvideTimeout;
+        this.providerFindTimeout = builder.providerFindTimeout;
+        this.providerMergeGrace = builder.providerMergeGrace;
+        this.delegatedRoutingFactory = builder.delegatedRoutingFactory;
+        this.peerSource = builder.httpBootstrapFallback && builder.peerSource == null
+                ? resolveDefaultPeerSource()
+                : builder.peerSource;
     }
 
     /** @return the Kademlia protocol ID (default: /ipfs/kad/1.0.0) */
@@ -233,9 +248,45 @@ public class KadConfig {
     /** @return the max number of fallback peers dialed per bootstrap (default: 25) */
     public int getHttpBootstrapDialLimit() { return httpBootstrapDialLimit; }
 
+    /** @return per-path timeout for the native kad announce half (default: 10s) */
+    public Duration getProviderProvideTimeout() { return providerProvideTimeout; }
+
+    /** @return per-path timeout for the native kad find half (default: 15s) */
+    public Duration getProviderFindTimeout() { return providerFindTimeout; }
+
+    /** @return grace window during which the slower provider path is still merged (default: 250ms) */
+    public Duration getProviderMergeGrace() { return providerMergeGrace; }
+
+    /**
+     * @return factory that builds the delegated routing path given the resolved
+     *         peer source, hosts and kad protocol; defaults to
+     *         {@link HttpDelegatedRouting} over the configured HTTP routers
+     */
+    public DelegatedRoutingFactory getDelegatedRoutingFactory() {
+        return delegatedRoutingFactory != null ? delegatedRoutingFactory : DEFAULT_DELEGATED_FACTORY;
+    }
+
+    /**
+     * @return the peer source used both as a bootstrap fallback and for the
+     *         delegated routing responsables; {@code null} when HTTP routing is
+     *         disabled
+     */
+    public PeerSource getPeerSource() { return peerSource; }
+
     public static Builder builder() {
         return new Builder();
     }
+
+    private PeerSource resolveDefaultPeerSource() {
+        return new HttpBootstrapPeerSource(httpBootstrapRouters, httpBootstrapTimeout, httpBootstrapLookupKeys, httpBootstrapDialLimit);
+    }
+
+    /** Default {@link DelegatedRoutingFactory}: wraps {@code HttpDelegatedRouting}. */
+    public static final DelegatedRoutingFactory DEFAULT_DELEGATED_FACTORY = (source, protocol, routingTable, ttl, host) -> {
+        HttpDelegatedRouting r = new HttpDelegatedRouting(source, protocol, routingTable, ttl);
+        r.setHost(host);
+        return r;
+    };
 
     public static class Builder {
 
@@ -277,6 +328,11 @@ public class KadConfig {
         private Duration httpBootstrapTimeout = Duration.ofSeconds(15);
         private int httpBootstrapLookupKeys = 3;
         private int httpBootstrapDialLimit = 25;
+        private Duration providerProvideTimeout = Duration.ofSeconds(10);
+        private Duration providerFindTimeout = Duration.ofSeconds(15);
+        private Duration providerMergeGrace = Duration.ofMillis(250);
+        private DelegatedRoutingFactory delegatedRoutingFactory;
+        private PeerSource peerSource;
 
         private Builder() {}
 
@@ -318,6 +374,11 @@ public class KadConfig {
         public Builder httpBootstrapTimeout(Duration httpBootstrapTimeout) { this.httpBootstrapTimeout = httpBootstrapTimeout; return this; }
         public Builder httpBootstrapLookupKeys(int httpBootstrapLookupKeys) { this.httpBootstrapLookupKeys = httpBootstrapLookupKeys; return this; }
         public Builder httpBootstrapDialLimit(int httpBootstrapDialLimit) { this.httpBootstrapDialLimit = httpBootstrapDialLimit; return this; }
+        public Builder providerProvideTimeout(Duration providerProvideTimeout) { this.providerProvideTimeout = providerProvideTimeout; return this; }
+        public Builder providerFindTimeout(Duration providerFindTimeout) { this.providerFindTimeout = providerFindTimeout; return this; }
+        public Builder providerMergeGrace(Duration providerMergeGrace) { this.providerMergeGrace = providerMergeGrace; return this; }
+        public Builder delegatedRoutingFactory(DelegatedRoutingFactory delegatedRoutingFactory) { this.delegatedRoutingFactory = delegatedRoutingFactory; return this; }
+        public Builder peerSource(PeerSource peerSource) { this.peerSource = peerSource; return this; }
 
         public KadConfig build() {
             if (kValue <= 0) throw new IllegalArgumentException("kValue must be > 0, got " + kValue);
@@ -350,6 +411,15 @@ public class KadConfig {
             }
             if (httpBootstrapLookupKeys < 1) throw new IllegalArgumentException("httpBootstrapLookupKeys must be >= 1, got " + httpBootstrapLookupKeys);
             if (httpBootstrapDialLimit < 1) throw new IllegalArgumentException("httpBootstrapDialLimit must be >= 1, got " + httpBootstrapDialLimit);
+            if (providerProvideTimeout == null || providerProvideTimeout.isNegative() || providerProvideTimeout.isZero()) {
+                throw new IllegalArgumentException("providerProvideTimeout must be positive");
+            }
+            if (providerFindTimeout == null || providerFindTimeout.isNegative() || providerFindTimeout.isZero()) {
+                throw new IllegalArgumentException("providerFindTimeout must be positive");
+            }
+            if (providerMergeGrace == null || providerMergeGrace.isNegative()) {
+                throw new IllegalArgumentException("providerMergeGrace must be non-negative");
+            }
             return new KadConfig(this);
         }
     }

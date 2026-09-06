@@ -23,6 +23,7 @@ class ProviderRoutingCoordinatorTest {
     private static final byte[] KEY = {1, 2, 3};
     private static final String PROVIDER_A = "12D3KooWHQnFuULtcGg9axasidmqVg8HHRw2XzKHPP8LjJpiwwHn";
     private static final String PROVIDER_B = "12D3KooWKnDdG3iXw9eTFijk3EWSunZcFi54Zka4wmtqtt6rPxc8";
+    private static final String PROVIDER_C = "12D3KooWPK7CkDkM6PKQY5gV4qpzX5mFhFNZHhtdKx8L9xRdCvG7";
 
     // short timeouts/grace so the suite stays fast; every test asserts on real completions
     private static final Duration TINY = Duration.ofMillis(50);
@@ -121,7 +122,197 @@ class ProviderRoutingCoordinatorTest {
         assertTrue(result.join().isEmpty());
     }
 
-    private ProviderRoutingCoordinator provideCoordinator(Function<byte[], CompletableFuture<Boolean>> kad) {
+    // ---- failure matrix (#13) -------------------------------------------------
+
+    @Test
+    void provideKadThrowsImmediatelyFailsWithoutDelegated() {
+        CompletableFuture<Boolean> result = provideCoordinator(k -> failingProvide()).provide(KEY);
+        assertEquals(false, result.join());
+    }
+
+    @Test
+    void provideKadThrowsButDelegatedWins() {
+        CompletableFuture<Boolean> result = provideCoordinator(k -> failingProvide(), delegated(true, List.of())).provide(KEY);
+        assertEquals(true, result.join());
+    }
+
+    @Test
+    void provideDelegatedThrowsButKadWins() {
+        CompletableFuture<Boolean> result = provideCoordinator(
+                k -> CompletableFuture.completedFuture(true),
+                throwingDelegated()).provide(KEY);
+        assertEquals(true, result.join());
+    }
+
+    @Test
+    void provideBothThrowFails() {
+        CompletableFuture<Boolean> result = provideCoordinator(
+                k -> failingProvide(),
+                throwingDelegated()).provide(KEY);
+        assertEquals(false, result.join());
+    }
+
+    @Test
+    void provideKadThrowsAndDelegatedEmptyFails() {
+        // "one throws + other empty" must not mask the failure as a win
+        CompletableFuture<Boolean> result = provideCoordinator(
+                k -> failingProvide(),
+                delegated(false, List.of())).provide(KEY);
+        assertEquals(false, result.join());
+    }
+
+    @Test
+    void provideKadAnnounceResultQuorumReachedCountsAsSuccess() {
+        // native path reports a partial write whose quorum was reached (#3/#4)
+        CompletableFuture<Boolean> result = provideCoordinator(
+                k -> CompletableFuture.completedFuture(new ProviderRoutingCoordinator.AnnounceResult(true, 5, 3)),
+                delegated(false, List.of())).provide(KEY);
+        assertEquals(true, result.join());
+    }
+
+    @Test
+    void provideKadAnnounceResultNoQuorumCountsAsFailure() {
+        CompletableFuture<Boolean> result = provideCoordinator(
+                k -> CompletableFuture.completedFuture(new ProviderRoutingCoordinator.AnnounceResult(false, 5, 1)),
+                delegated(false, List.of())).provide(KEY);
+        assertEquals(false, result.join());
+    }
+
+    @Test
+    void findKadThrowsReturnsDelegated() {
+        CompletableFuture<List<ProviderRecord>> result = findCoordinator(
+                k -> failingFind(),
+                delegated(true, List.of(record(PROVIDER_B)))).findProviders(KEY);
+        assertEquals(List.of(PROVIDER_B), result.join().stream().map(p -> p.getProvider().toBase58()).toList());
+    }
+
+    @Test
+    void findDelegatedThrowsReturnsKad() {
+        CompletableFuture<List<ProviderRecord>> result = findCoordinator(
+                k -> CompletableFuture.completedFuture(List.of(record(PROVIDER_A))),
+                throwingDelegated()).findProviders(KEY);
+        assertEquals(List.of(PROVIDER_A), result.join().stream().map(p -> p.getProvider().toBase58()).toList());
+    }
+
+    @Test
+    void findBothThrowReturnsEmpty() {
+        CompletableFuture<List<ProviderRecord>> result = findCoordinator(
+                k -> failingFind(),
+                throwingDelegated()).findProviders(KEY);
+        assertTrue(result.join().isEmpty());
+    }
+
+    @Test
+    void findKadThrowsAndDelegatedEmptyReturnsEmpty() {
+        CompletableFuture<List<ProviderRecord>> result = findCoordinator(
+                k -> failingFind(),
+                delegated(List.of())).findProviders(KEY);
+        assertTrue(result.join().isEmpty());
+    }
+
+    @Test
+    void findBothNonEmptySimultaneouslyMerges() {
+        CompletableFuture<List<ProviderRecord>> result = findCoordinator(
+                k -> CompletableFuture.completedFuture(List.of(record(PROVIDER_A))),
+                new DelegatedRouting() {
+                    @Override public CompletableFuture<Boolean> announce(byte[] key) {
+                        return CompletableFuture.completedFuture(true);
+                    }
+                    @Override public CompletableFuture<List<ProviderRecord>> findProviders(byte[] key) {
+                        // answers in the same instant as kad
+                        return CompletableFuture.completedFuture(List.of(record(PROVIDER_B)));
+                    }
+                }).findProviders(KEY);
+        List<ProviderRecord> got = result.join();
+        assertEquals(2, got.size());
+    }
+
+    @Test
+    void findDuplicatesFromBothPathsAreDeduplicated() {
+        CompletableFuture<List<ProviderRecord>> result = findCoordinator(
+                k -> CompletableFuture.completedFuture(List.of(record(PROVIDER_A), record(PROVIDER_B))),
+                new DelegatedRouting() {
+                    @Override public CompletableFuture<Boolean> announce(byte[] key) {
+                        return CompletableFuture.completedFuture(true);
+                    }
+                    @Override public CompletableFuture<List<ProviderRecord>> findProviders(byte[] key) {
+                        return CompletableFuture.completedFuture(List.of(record(PROVIDER_A), record(PROVIDER_C)));
+                    }
+                }).findProviders(KEY);
+        List<String> got = result.join().stream().map(p -> p.getProvider().toBase58()).toList();
+        assertEquals(3, got.size());
+        assertEquals(java.util.Set.of(PROVIDER_A, PROVIDER_B, PROVIDER_C), java.util.Set.copyOf(got));
+    }
+
+    @Test
+    void findDelegatedArrivingExactlyAtGraceBoundaryEitherMatches() throws Exception {
+        // completion lands exactly on the grace deadline; both "merged" and
+        // "first only" are valid outcomes, neither may be an exception or a block
+        CompletableFuture<List<ProviderRecord>> result = findCoordinator(
+                k -> CompletableFuture.completedFuture(List.of(record(PROVIDER_A))),
+                delegatedProvidersAfter(List.of(record(PROVIDER_B)), GRACE.toMillis())).findProviders(KEY);
+        List<ProviderRecord> got = result.get(2, TimeUnit.SECONDS);
+        assertTrue(got.size() == 1 || got.size() == 2);
+        assertTrue(got.stream().anyMatch(p -> p.getProvider().toBase58().equals(PROVIDER_A)));
+    }
+
+    @Test
+    void tenConcurrentProvidesAllResolveConsistently() throws Exception {
+        ProviderRoutingCoordinator coordinator = provideCoordinator(
+                k -> CompletableFuture.completedFuture(true),
+                delegated(true, List.of()));
+        java.util.List<CompletableFuture<Boolean>> all = new java.util.ArrayList<>();
+        for (int i = 0; i < 10; i++) all.add(coordinator.provide(KEY));
+        for (CompletableFuture<Boolean> f : all) assertEquals(true, f.get(2, TimeUnit.SECONDS));
+    }
+
+    @Test
+    void tenConcurrentFindsAllResolveConsistently() throws Exception {
+        ProviderRoutingCoordinator coordinator = findCoordinator(
+                k -> CompletableFuture.completedFuture(List.of(record(PROVIDER_A))),
+                new DelegatedRouting() {
+                    @Override public CompletableFuture<Boolean> announce(byte[] key) {
+                        return CompletableFuture.completedFuture(true);
+                    }
+                    @Override public CompletableFuture<List<ProviderRecord>> findProviders(byte[] key) {
+                        return CompletableFuture.completedFuture(List.of(record(PROVIDER_B)));
+                    }
+                });
+        java.util.List<CompletableFuture<List<ProviderRecord>>> all = new java.util.ArrayList<>();
+        for (int i = 0; i < 10; i++) all.add(coordinator.findProviders(KEY));
+        for (CompletableFuture<List<ProviderRecord>> f : all) {
+            assertEquals(2, f.get(2, TimeUnit.SECONDS).size());
+        }
+    }
+
+    private CompletableFuture<Boolean> failingProvide() {
+        CompletableFuture<Boolean> f = new CompletableFuture<>();
+        f.completeExceptionally(new IllegalStateException("kad path crash"));
+        return f;
+    }
+
+    private CompletableFuture<List<ProviderRecord>> failingFind() {
+        CompletableFuture<List<ProviderRecord>> f = new CompletableFuture<>();
+        f.completeExceptionally(new IllegalStateException("kad path crash"));
+        return f;
+    }
+
+    private DelegatedRouting throwingDelegated() {
+        return new DelegatedRouting() {
+            @Override public CompletableFuture<Boolean> announce(byte[] key) {
+                CompletableFuture<Boolean> f = new CompletableFuture<>();
+                f.completeExceptionally(new IllegalStateException("http path crash"));
+                return f;
+            }
+            @Override public CompletableFuture<List<ProviderRecord>> findProviders(byte[] key) {
+                CompletableFuture<List<ProviderRecord>> f = new CompletableFuture<>();
+                f.completeExceptionally(new IllegalStateException("http path crash"));
+                return f;
+            }
+        };
+    }
+
+    private ProviderRoutingCoordinator provideCoordinator(Function<byte[], CompletableFuture<?>> kad) {
         return new ProviderRoutingCoordinator(
                 kad,
                 k -> CompletableFuture.completedFuture(List.of()),
@@ -129,7 +320,7 @@ class ProviderRoutingCoordinatorTest {
     }
 
     private ProviderRoutingCoordinator provideCoordinator(
-            Function<byte[], CompletableFuture<Boolean>> kad,
+            Function<byte[], CompletableFuture<?>> kad,
             DelegatedRouting delegated) {
         return new ProviderRoutingCoordinator(
                 kad,

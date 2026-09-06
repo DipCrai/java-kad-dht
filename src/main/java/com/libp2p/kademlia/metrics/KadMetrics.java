@@ -17,6 +17,7 @@ public class KadMetrics {
     public final AtomicLong timeoutCount = new AtomicLong();
     public final AtomicLong replicationSuccess = new AtomicLong();
     public final AtomicLong replicationFailure = new AtomicLong();
+    public final AtomicLong replicationPartial = new AtomicLong();
     public final AtomicLong quorumAchieved = new AtomicLong();
     public final AtomicLong quorumFailed = new AtomicLong();
     public final AtomicLong queryCancellation = new AtomicLong();
@@ -62,6 +63,7 @@ public class KadMetrics {
 
     public void recordReplicationSuccess() { replicationSuccess.incrementAndGet(); }
     public void recordReplicationFailure() { replicationFailure.incrementAndGet(); }
+    public void recordReplicationPartial() { replicationPartial.incrementAndGet(); }
     public void recordQuorumAchieved() { quorumAchieved.incrementAndGet(); }
     public void recordQuorumFailed() { quorumFailed.incrementAndGet(); }
     public void recordQueryCancellation() { queryCancellation.incrementAndGet(); }
@@ -75,7 +77,7 @@ public class KadMetrics {
         return "KadMetrics{lookups=" + lookupStarted + "/" + lookupFinished + "/" + lookupFailed +
                 ", rpc=" + rpcSuccess + "/" + rpcTimeout + "/" + rpcFailure +
                 ", records=" + recordsStored + ", providers=" + providersStored +
-                ", replication=" + replicationSuccess + "/" + replicationFailure +
+                ", replication=" + replicationSuccess + "/" + replicationFailure + "/partial=" + replicationPartial +
                 ", quorum=" + quorumAchieved + "/" + quorumFailed + "}";
     }
 }

@@ -1,8 +1,10 @@
 package com.libp2p.kademlia.routing;
 
 import com.libp2p.kademlia.records.ProviderRecord;
+import io.libp2p.core.PeerId;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -42,22 +44,22 @@ public class ProviderRoutingCoordinator {
         return t;
     });
 
-    private final Function<byte[], CompletableFuture<Boolean>> kadProvide;
+    private final Function<byte[], CompletableFuture<?>> kadProvide;
     private final Function<byte[], CompletableFuture<List<ProviderRecord>>> kadFindProviders;
-    private final DelegatedRouting delegated;
+    private volatile DelegatedRouting delegated;
     private final Duration kadProvideTimeout;
     private final Duration kadFindTimeout;
     private final Duration mergeGrace;
 
     public ProviderRoutingCoordinator(
-            Function<byte[], CompletableFuture<Boolean>> kadProvide,
+            Function<byte[], CompletableFuture<?>> kadProvide,
             Function<byte[], CompletableFuture<List<ProviderRecord>>> kadFindProviders,
             DelegatedRouting delegated) {
         this(kadProvide, kadFindProviders, delegated, DEFAULT_KAD_PROVIDE_TIMEOUT, DEFAULT_KAD_FIND_TIMEOUT, DEFAULT_MERGE_GRACE);
     }
 
     public ProviderRoutingCoordinator(
-            Function<byte[], CompletableFuture<Boolean>> kadProvide,
+            Function<byte[], CompletableFuture<?>> kadProvide,
             Function<byte[], CompletableFuture<List<ProviderRecord>>> kadFindProviders,
             DelegatedRouting delegated,
             Duration kadProvideTimeout,
@@ -71,24 +73,75 @@ public class ProviderRoutingCoordinator {
         this.mergeGrace = mergeGrace;
     }
 
+    /** Wire in (or replace) the delegated path once its host is known. */
+    public void setDelegated(DelegatedRouting delegated) {
+        this.delegated = delegated;
+    }
+
     /** @param key the content key */
     public CompletableFuture<Boolean> provide(byte[] key) {
         CompletableFuture<Boolean> kad = kadProvide.apply(key)
+                .thenApply(this::asBoolean)
                 .orTimeout(kadProvideTimeout.toMillis(), TimeUnit.MILLISECONDS)
                 .exceptionally(ex -> false);
-        if (delegated == null) return kad;
-        CompletableFuture<Boolean> http = delegated.announce(key).exceptionally(ex -> false);
+        DelegatedRouting d = delegated;
+        if (d == null) return kad;
+        CompletableFuture<Boolean> http = d.announce(key).exceptionally(ex -> false);
         return anySucceeded(List.of(kad, http));
+    }
+
+    /**
+     * Projects the native path's rich {@link AnnounceResult} (or a plain
+     * {@link Boolean}) down to the single boolean the public API promises. This
+     * is how the two different announce-success models are unified: a native
+     * partial write whose {@code writeQuorum} was reached still counts as an
+     * announce, while {@code AnnounceResult.success == false} cannot be masked
+     * as a win by any other path.
+     */
+    private Boolean asBoolean(Object v) {
+        if (v instanceof AnnounceResult ar) return ar.success();
+        if (v instanceof Boolean b) return b;
+        return v != null;
     }
 
     /** @param key the content key */
     public CompletableFuture<List<ProviderRecord>> findProviders(byte[] key) {
         CompletableFuture<List<ProviderRecord>> kad = kadFindProviders.apply(key)
                 .orTimeout(kadFindTimeout.toMillis(), TimeUnit.MILLISECONDS)
-                .exceptionally(ex -> List.of());
-        if (delegated == null) return kad;
-        return firstNonEmptyThenMerge(kad, delegated.findProviders(key));
+                .exceptionally(ex -> List.of())
+                .thenApply(this::filterValid);
+        DelegatedRouting d = delegated;
+        if (d == null) return kad;
+        CompletableFuture<List<ProviderRecord>> http = d.findProviders(key)
+                .exceptionally(ex -> List.of())
+                .thenApply(this::filterValid);
+        return firstNonEmptyThenMerge(kad, http);
     }
+
+    /**
+     * Unified provider result filter applied to whichever path answered, so a
+     * delegated backend cannot hand back expired, malformed or duplicate
+     * providers that the native path would never return (#11).
+     */
+    private List<ProviderRecord> filterValid(List<ProviderRecord> in) {
+        Instant now = Instant.now();
+        java.util.Set<PeerId> seen = new java.util.HashSet<>();
+        List<ProviderRecord> out = new ArrayList<>();
+        for (ProviderRecord p : in) {
+            if (p == null || p.getProvider() == null || p.getKey() == null) continue;
+            if (p.isExpired(now)) continue;
+            if (!seen.add(p.getProvider())) continue;
+            out.add(p);
+        }
+        return out;
+    }
+
+    /**
+     * Rich announce outcome produced by the native kad path, so the coordinator
+     * can tell "an announce was confirmed" (with partial write counts) from "the
+     * path failed entirely" instead of flattening everything to a boolean.
+     */
+    public record AnnounceResult(boolean success, int attempted, int succeeded) {}
 
     /** Completes true as soon as one future reports success, else false when all are done. */
     private static CompletableFuture<Boolean> anySucceeded(List<CompletableFuture<Boolean>> futures) {
