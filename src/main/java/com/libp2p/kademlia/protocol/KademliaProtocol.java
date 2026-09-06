@@ -504,6 +504,7 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
     public static class KademliaCodec extends io.netty.channel.ChannelDuplexHandler {
         private final java.io.ByteArrayOutputStream readBuffer = new java.io.ByteArrayOutputStream(4096);
         private int expectedLength = -1;
+        private long dropRemaining = 0;
 
         @Override
         public void write(io.netty.channel.ChannelHandlerContext ctx, Object msg, io.netty.channel.ChannelPromise promise) {
@@ -525,6 +526,13 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
                     byteBuf.readBytes(data); byteBuf.release();
                     int offset = 0;
                     while (offset < data.length) {
+                        if (dropRemaining > 0) {
+                            // an oversized inbound frame was seen: skip its payload and
+                            // resume at the next frame instead of tearing the stream down
+                            long take = Math.min(data.length - offset, dropRemaining);
+                            dropRemaining -= take; offset += take;
+                            continue;
+                        }
                         if (expectedLength < 0) {
                             long result = 0; int shift = 0; boolean done = false;
                             while (offset < data.length && !done) {
@@ -532,9 +540,13 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
                                 if ((b & 0x80) == 0) done = true; shift += 7;
                             }
                             if (!done) continue;
-                            if (result > 16384) { ctx.fireExceptionCaught(new IllegalStateException("Frame too large")); return; }
+                            if (result > 16384 || result < 0) {
+                                // oversized or overflowing varint length: skip the payload
+                                // instead of tearing the stream down
+                                dropRemaining = result < 0 ? Long.MAX_VALUE : result;
+                                continue;
+                            }
                             expectedLength = (int) result;
-                            if (expectedLength > 16384) { ctx.fireExceptionCaught(new IllegalStateException("Frame too large")); return; }
                         } else {
                             int avail = data.length - offset;
                             int needed = expectedLength - readBuffer.size();

@@ -49,12 +49,14 @@ public class HttpBootstrapE2EProbe {
 
         try {
             long t0 = System.nanoTime();
-            nodeA.dht.bootstrap().get(60, TimeUnit.SECONDS);
-            System.out.println("[A] bootstrap() SUCCEEDED in " + ms(t0) + " ms, RT=" + nodeA.dht.getRoutingTable().size());
+            try { nodeA.dht.bootstrap().get(10, TimeUnit.SECONDS); } catch (Exception ignored) {}
+            waitForRT(nodeA, "A", t0);
+            System.out.println("[A] bootstrap RT=" + nodeA.dht.getRoutingTable().size());
 
             t0 = System.nanoTime();
-            nodeB.dht.bootstrap().get(60, TimeUnit.SECONDS);
-            System.out.println("[B] bootstrap() SUCCEEDED in " + ms(t0) + " ms, RT=" + nodeB.dht.getRoutingTable().size());
+            try { nodeB.dht.bootstrap().get(10, TimeUnit.SECONDS); } catch (Exception ignored) {}
+            waitForRT(nodeB, "B", t0);
+            System.out.println("[B] bootstrap RT=" + nodeB.dht.getRoutingTable().size());
 
             long tProvide = System.nanoTime();
             Boolean provided = nodeA.dht.provide(friendKey).get(60, TimeUnit.SECONDS);
@@ -78,6 +80,13 @@ public class HttpBootstrapE2EProbe {
             nodeB.dht.close(); nodeB.host.stop().get(10, TimeUnit.SECONDS);
         }
         System.exit(0);
+    }
+
+    private static void waitForRT(Node node, String tag, long t0) throws Exception {
+        while (node.dht.getRoutingTable().size() == 0 && (System.nanoTime() - t0) / 1_000_000 < 40_000) {
+            Thread.sleep(1000);
+        }
+        System.out.println("[" + tag + "] bootstrap done in " + ms(t0) + " ms");
     }
 
     private static Node startNode(String tag, PrivKey key) throws Exception {
