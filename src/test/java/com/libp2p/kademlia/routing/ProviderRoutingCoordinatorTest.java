@@ -267,6 +267,31 @@ class ProviderRoutingCoordinatorTest {
     }
 
     @Test
+    void provideKadFalseAndHangingDelegatedFailsWithinTimeout() throws Exception {
+        // delegated announce never completes: the coordinator must resolve by its
+        // own provide timeout instead of waiting on anySucceeded forever
+        long t0 = System.nanoTime();
+        CompletableFuture<Boolean> result = provideCoordinator(
+                k -> CompletableFuture.completedFuture(false),
+                hangingDelegated()).provide(KEY);
+        assertEquals(false, result.get(2, TimeUnit.SECONDS));
+        assertTrue((System.nanoTime() - t0) / 1_000_000 < 2000, "hanging delegated must be cut by the provide timeout");
+    }
+
+    @Test
+    void findEmptyKadAndHangingDelegatedReturnsEmptyWithinGrace() throws Exception {
+        // empty first answer must still arm the grace deadline, so a hanging
+        // delegated branch cannot block the caller forever
+        long t0 = System.nanoTime();
+        CompletableFuture<List<ProviderRecord>> result = findCoordinator(
+                k -> CompletableFuture.completedFuture(List.of()),
+                hangingDelegated()).findProviders(KEY);
+        assertTrue(result.get(2, TimeUnit.SECONDS).isEmpty());
+        assertTrue((System.nanoTime() - t0) / 1_000_000 < 2000,
+                "empty-and-hanging must be bounded by the grace deadline");
+    }
+
+    @Test
     void tenConcurrentFindsAllResolveConsistently() throws Exception {
         ProviderRoutingCoordinator coordinator = findCoordinator(
                 k -> CompletableFuture.completedFuture(List.of(record(PROVIDER_A))),
@@ -308,6 +333,17 @@ class ProviderRoutingCoordinatorTest {
                 CompletableFuture<List<ProviderRecord>> f = new CompletableFuture<>();
                 f.completeExceptionally(new IllegalStateException("http path crash"));
                 return f;
+            }
+        };
+    }
+
+    private DelegatedRouting hangingDelegated() {
+        return new DelegatedRouting() {
+            @Override public CompletableFuture<Boolean> announce(byte[] key) {
+                return new CompletableFuture<>();
+            }
+            @Override public CompletableFuture<List<ProviderRecord>> findProviders(byte[] key) {
+                return new CompletableFuture<>();
             }
         };
     }

@@ -86,7 +86,9 @@ public class ProviderRoutingCoordinator {
                 .exceptionally(ex -> false);
         DelegatedRouting d = delegated;
         if (d == null) return kad;
-        CompletableFuture<Boolean> http = d.announce(key).exceptionally(ex -> false);
+        CompletableFuture<Boolean> http = d.announce(key)
+                .orTimeout(kadProvideTimeout.toMillis(), TimeUnit.MILLISECONDS)
+                .exceptionally(ex -> false);
         return anySucceeded(List.of(kad, http));
     }
 
@@ -190,6 +192,7 @@ public class ProviderRoutingCoordinator {
         private List<ProviderRecord> firstNonEmpty;
         private List<ProviderRecord> tail;
         private int pending = 2;
+        private boolean started;
         private boolean finished;
         private ScheduledFuture<?> timer;
 
@@ -204,15 +207,19 @@ public class ProviderRoutingCoordinator {
             synchronized (lock) {
                 if (finished) return;
                 pending--;
+                boolean firstArrival = !started;
+                started = true;
                 if (!v.isEmpty()) {
                     if (firstNonEmpty == null) {
                         firstNonEmpty = v;
-                        if (timer == null && pending > 0) {
-                            timer = GRACE.schedule(this::onGrace, graceMillis, TimeUnit.MILLISECONDS);
-                        }
                     } else {
                         tail = v;
                     }
+                }
+                // arm the deadline on the FIRST result of either kind, so an empty
+                // first answer can never leave the other branch unguarded forever
+                if (firstArrival && pending > 0 && timer == null) {
+                    timer = GRACE.schedule(this::onGrace, graceMillis, TimeUnit.MILLISECONDS);
                 }
                 if (pending == 0 && !finished) {
                     finished = true;
