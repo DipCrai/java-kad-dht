@@ -36,6 +36,7 @@ public class IterativeLookup {
     private volatile com.libp2p.kademlia.routing.RoutingTable lookupRoutingTable;
     private volatile java.util.Set<PeerId> excludedPeers;
     private long peerAddressTTLSeconds = 1800;
+    private volatile boolean refreshMode = false;
     private volatile com.libp2p.kademlia.records.RecordValidator validator;
 
     public IterativeLookup(byte[] target, byte[] wireTarget, List<KadPeer> seedPeers, int k, int alpha, int beta,
@@ -179,11 +180,18 @@ public class IterativeLookup {
             } catch (Exception ignored) {}
         }
         if (lookupRoutingTable != null) {
-            Boolean kadSupport = identifyAdapter != null ? identifyAdapter.getKadServerSupport(peerId) : null;
-            if (kadSupport != null && kadSupport) {
-                // single admission point shared with the delegated routing path
+            if (refreshMode) {
+                // kademlia refresh: peers that answer a kad FIND_NODE are kad
+                // servers regardless of Identify (go-libp2p: TryAddPeer).
                 lookupRoutingTable.insertDiscovered(peerId, addrs != null ? addrs : List.of())
                         .exceptionally(ex -> false);
+            } else {
+                Boolean kadSupport = identifyAdapter != null ? identifyAdapter.getKadServerSupport(peerId) : null;
+                if (kadSupport != null && kadSupport) {
+                    // single admission point shared with the delegated routing path
+                    lookupRoutingTable.insertDiscovered(peerId, addrs != null ? addrs : List.of())
+                            .exceptionally(ex -> false);
+                }
             }
         }
     }
@@ -340,6 +348,7 @@ public class IterativeLookup {
     }
 
     public void setIdentifyAdapter(com.libp2p.kademlia.integration.IdentifyAdapter adapter) { this.identifyAdapter = adapter; }
+    public void setRefreshMode(boolean refreshMode) { this.refreshMode = refreshMode; }
     public void setValidator(com.libp2p.kademlia.records.RecordValidator validator) { this.validator = validator; }
     public void setLookupRoutingTable(com.libp2p.kademlia.routing.RoutingTable rt) { this.lookupRoutingTable = rt; }
     public void setExcludedPeers(java.util.Set<PeerId> excluded) { this.excludedPeers = excluded; }

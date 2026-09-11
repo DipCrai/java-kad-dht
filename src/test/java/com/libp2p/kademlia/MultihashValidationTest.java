@@ -94,41 +94,33 @@ class MultihashValidationTest {
     }
 
     @Test
-    void testInvalidTooShort() {
+    void testShortNonMultihashKeyAccepted() {
         byte[] key = new byte[]{0x12};
-        Dht.Message.Peer selfPeerMsg = Dht.Message.Peer.newBuilder()
-                .setId(ByteString.copyFrom(selfPeer.getBytes()))
-                .setConnection(Dht.Message.ConnectionType.CONNECTED)
-                .build();
         Dht.Message req = Dht.Message.newBuilder()
                 .setType(Dht.Message.MessageType.ADD_PROVIDER)
                 .setKey(ByteString.copyFrom(key))
-                .addProviderPeers(selfPeerMsg)
+                .addProviderPeers(selfProviderPeer())
                 .build();
 
         protocol.handleAddProvider(req, selfPeer);
-        assertTrue(providerStore.getProviders(key).isEmpty(), "too short key should be rejected");
+        assertFalse(providerStore.getProviders(key).isEmpty(), "short non-multihash key should be accepted (Go/Rust do no structural validation)");
     }
 
     @Test
-    void testInvalidGarbage() {
+    void testNonMultihashKeyAccepted() {
         byte[] key = new byte[]{(byte) 0xFF, (byte) 0xFF, (byte) 0xFF};
-        Dht.Message.Peer selfPeerMsg = Dht.Message.Peer.newBuilder()
-                .setId(ByteString.copyFrom(selfPeer.getBytes()))
-                .setConnection(Dht.Message.ConnectionType.CONNECTED)
-                .build();
         Dht.Message req = Dht.Message.newBuilder()
                 .setType(Dht.Message.MessageType.ADD_PROVIDER)
                 .setKey(ByteString.copyFrom(key))
-                .addProviderPeers(selfPeerMsg)
+                .addProviderPeers(selfProviderPeer())
                 .build();
 
         protocol.handleAddProvider(req, selfPeer);
-        assertTrue(providerStore.getProviders(key).isEmpty(), "garbage key should be rejected");
+        assertFalse(providerStore.getProviders(key).isEmpty(), "garbage key should be accepted (Go/Rust do no structural validation)");
     }
 
     @Test
-    void testInvalidWrongLength() {
+    void testWrongLengthMultihashKeyAccepted() {
         List<Byte> keyList = new ArrayList<>();
         encodeVarint(0x12, keyList);
         encodeVarint(32, keyList);
@@ -137,17 +129,13 @@ class MultihashValidationTest {
         byte[] key = new byte[keyList.size()];
         for (int i = 0; i < keyList.size(); i++) key[i] = keyList.get(i);
 
-        Dht.Message.Peer selfPeerMsg = Dht.Message.Peer.newBuilder()
-                .setId(ByteString.copyFrom(selfPeer.getBytes()))
-                .setConnection(Dht.Message.ConnectionType.CONNECTED)
-                .build();
         Dht.Message req = Dht.Message.newBuilder()
                 .setType(Dht.Message.MessageType.ADD_PROVIDER)
                 .setKey(ByteString.copyFrom(key))
-                .addProviderPeers(selfPeerMsg)
+                .addProviderPeers(selfProviderPeer())
                 .build();
 
         protocol.handleAddProvider(req, selfPeer);
-        assertTrue(providerStore.getProviders(key).isEmpty(), "wrong length key should be rejected");
+        assertFalse(providerStore.getProviders(key).isEmpty(), "wrong length key should be accepted (Go/Rust do no structural validation)");
     }
 }

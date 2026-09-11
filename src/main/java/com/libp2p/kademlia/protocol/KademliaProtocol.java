@@ -234,20 +234,6 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
         List<KadPeer> closer = routingTable.findClosest(key, kValue);
         Dht.Message.Builder builder = Dht.Message.newBuilder().setType(Dht.Message.MessageType.FIND_NODE).setKey(ByteString.copyFrom(key));
         for (KadPeer p : closer) { if (!p.nodeId.equals(requester)) builder.addCloserPeers(toProtoPeer(p)); }
-        if (key.length > 0) {
-            try {
-                PeerId targetAsPeer = new PeerId(key);
-                boolean targetPresent = closer.stream().anyMatch(p -> p.nodeId.equals(targetAsPeer));
-                if (!targetAsPeer.equals(requester) && !targetPresent) {
-                    for (KadPeer p : routingTable.findClosest(key, Integer.MAX_VALUE)) {
-                        if (p.nodeId.equals(targetAsPeer)) {
-                            builder.addCloserPeers(toProtoPeer(p));
-                            break;
-                        }
-                    }
-                }
-            } catch (IllegalArgumentException ignored) {}
-        }
         return builder.build();
     }
 
@@ -293,7 +279,6 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
     Dht.Message handleAddProvider(Dht.Message req, PeerId requester) {
         byte[] key = req.getKey().toByteArray();
         if (key.length == 0 || key.length > 80) return Dht.Message.newBuilder().setType(Dht.Message.MessageType.ADD_PROVIDER).build();
-        if (!isValidProviderKey(key)) return Dht.Message.newBuilder().setType(Dht.Message.MessageType.ADD_PROVIDER).build();
         for (Dht.Message.Peer p : req.getProviderPeersList()) {
             PeerId providerId = new PeerId(p.getId().toByteArray());
             if (!providerId.equals(requester)) continue;
@@ -423,32 +408,6 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
             }
             return new GetProvidersResponse(provs, closer);
         }
-    }
-
-    private boolean isValidProviderKey(byte[] key) {
-        if (key.length == 0) return false;
-        int pos = 0;
-        long hashFuncCode = 0;
-        int shift = 0;
-        while (pos < key.length) {
-            byte b = key[pos++];
-            hashFuncCode |= (long)(b & 0x7F) << shift;
-            if ((b & 0x80) == 0) break;
-            shift += 7;
-            if (shift > 63) return false;
-        }
-        if (pos >= key.length) return false;
-        long digestLength = 0;
-        shift = 0;
-        while (pos < key.length) {
-            byte b = key[pos++];
-            digestLength |= (long)(b & 0x7F) << shift;
-            if ((b & 0x80) == 0) break;
-            shift += 7;
-            if (shift > 63) return false;
-        }
-        if (digestLength < 0 || digestLength > Integer.MAX_VALUE) return false;
-        return pos + (int)digestLength == key.length;
     }
 
     public interface KademliaController {

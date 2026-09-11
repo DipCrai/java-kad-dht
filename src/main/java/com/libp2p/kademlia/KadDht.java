@@ -139,7 +139,8 @@ public class KadDht {
                 config.getProviderProvideTimeout(), config.getProviderFindTimeout(), config.getProviderMergeGrace());
         this.bootstrapManager = new BootstrapManager(routingTable, null, config.getBootstrapNodes(), config.getSubstreamTimeout(), config.getQueryTimeout(), config.getBootstrapAddressTTL().toMillis(),
                 httpSource, config.isHttpBootstrapFallback(), config.getHttpBootstrapDialLimit());
-        this.rtRefresh = new RoutingTableRefresh(routingTable, null, config.getBootstrapInterval(), config.getPendingTimeout());
+        this.rtRefresh = new RoutingTableRefresh(routingTable, null, config.getBootstrapInterval(), config.getPendingTimeout(),
+                config.getKValue(), config.getAlphaValue(), config.getBetaValue());
         this.rtRefresh.setProtocol(protocol);
 
         this.scheduler = Executors.newScheduledThreadPool(4, r -> {

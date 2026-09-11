@@ -1,36 +1,46 @@
 package com.libp2p.kademlia.refresh;
 
+import com.libp2p.kademlia.lookup.IterativeLookup;
+import com.libp2p.kademlia.lookup.QueryScheduler;
 import com.libp2p.kademlia.protocol.KademliaProtocol;
-import com.libp2p.kademlia.routing.RoutingTable;
 import com.libp2p.kademlia.routing.KadPeer;
+import com.libp2p.kademlia.routing.KBucketEntry;
+import com.libp2p.kademlia.routing.RoutingTable;
 import com.libp2p.kademlia.XorId;
 import io.libp2p.core.Host;
 import io.libp2p.core.PeerId;
-import io.libp2p.core.multiformats.Multiaddr;
 
 import java.time.Duration;
-import java.util.*;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.*;
 
 public class RoutingTableRefresh {
+    private static final Duration PEER_PING_TIMEOUT = Duration.ofSeconds(10);
     private final RoutingTable routingTable;
     private volatile Host host;
     private volatile KademliaProtocol protocol;
     private final Duration refreshInterval;
     private final Duration peerTimeout;
+    private final int k;
+    private final int alpha;
+    private final int beta;
     private ScheduledExecutorService scheduler;
     private ScheduledFuture<?> task;
-    private final ExecutorService fanoutPool = Executors.newFixedThreadPool(3, r -> {
-        Thread t = new Thread(r, "rt-refresh-fan");
-        t.setDaemon(true);
-        return t;
-    });
+    private final Map<Integer, Instant> lastRefreshedAt = new HashMap<>();
 
-    public RoutingTableRefresh(RoutingTable routingTable, Host host, Duration refreshInterval, Duration peerTimeout) {
+    public RoutingTableRefresh(RoutingTable routingTable, Host host, Duration refreshInterval,
+                               Duration peerTimeout, int k, int alpha, int beta) {
         this.routingTable = routingTable;
         this.host = host;
         this.refreshInterval = refreshInterval;
         this.peerTimeout = peerTimeout;
+        this.k = k;
+        this.alpha = alpha;
+        this.beta = beta;
     }
 
     public void setHost(Host host) { this.host = host; }
@@ -48,86 +58,117 @@ public class RoutingTableRefresh {
     public void stop() {
         if (task != null) task.cancel(false);
         if (scheduler != null) scheduler.shutdownNow();
-        fanoutPool.shutdownNow();
     }
 
     private void refresh() {
         try {
             if (host == null || protocol == null) return;
             byte[] selfKey = XorId.fromPeerId(host.getPeerId());
-            List<Integer> buckets = routingTable.getNonEmptyBucketIndices();
-            for (int idx : buckets) {
-                byte[] randomKey;
-                if (idx == 0) {
-                    randomKey = selfKey.clone();
-                    randomKey[0] = (byte) (randomKey[0] ^ (byte) 0x80);
-                } else {
-                    randomKey = XorId.generateRandomKeyForBucket(selfKey, idx);
-                }
-                iterativeFindNode(randomKey);
-            }
+            pingAndEvictPeers();
+            queryForSelf(selfKey);
+            refreshBuckets(selfKey);
         } catch (Exception ignored) {}
     }
 
-    private void iterativeFindNode(byte[] target) {
-        try {
-            List<KadPeer> active = getActivePeers();
-            if (active.isEmpty()) return;
-
-            Set<PeerId> queried = ConcurrentHashMap.newKeySet();
-            List<KadPeer> candidates = new ArrayList<>(active);
-            int noProgress = 0;
-            int concurrency = 3;
-
-            while (noProgress < 3) {
-                List<KadPeer> toQuery = new ArrayList<>();
-                for (KadPeer p : candidates) {
-                    if (!queried.contains(p.nodeId) && toQuery.size() < concurrency) {
-                        toQuery.add(p);
-                        queried.add(p.nodeId);
-                    }
-                }
-                if (toQuery.isEmpty()) break;
-
-                List<CompletableFuture<List<KadPeer>>> futures = new ArrayList<>();
-                for (KadPeer peer : toQuery) {
-                    futures.add(CompletableFuture.supplyAsync(() -> {
-                        try {
-                            var result = protocol.sendFindNode(target, peer.nodeId).get(
-                                    peerTimeout.toSeconds(), TimeUnit.SECONDS);
-                            routingTable.markSeen(peer.nodeId);
-                            return result.closerPeers();
-                        } catch (Exception e) {
-                            routingTable.remove(peer.nodeId);
-                            return List.<KadPeer>of();
-                        }
-                    }, fanoutPool));
-                }
-
-                boolean progress = false;
-                CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).join();
-                for (CompletableFuture<List<KadPeer>> f : futures) {
-                    for (KadPeer closer : f.join()) {
-                        if (!queried.contains(closer.nodeId)) {
-                            candidates.add(closer);
-                            routingTable.insert(closer.nodeId, closer.multiaddrs);
-                            progress = true;
-                        }
-                    }
-                }
-                noProgress = progress ? 0 : noProgress + 1;
-            }
-        } catch (Exception ignored) {}
+    private void queryForSelf(byte[] selfKey) {
+        runRefreshQuery(selfKey);
     }
 
-    private List<KadPeer> getActivePeers() {
-        List<KadPeer> peers = new ArrayList<>();
-        for (PeerId peer : routingTable.getAllPeers()) {
-            List<Multiaddr> addrs;
-            try { addrs = new ArrayList<>(host.getAddressBook().getAddrs(peer).get(2, TimeUnit.SECONDS)); }
-            catch (Exception e) { addrs = List.of(); }
-            peers.add(new KadPeer(peer, addrs, KadPeer.ConnectionType.CONNECTED));
+    private void refreshBuckets(byte[] selfKey) {
+        List<Integer> buckets = routingTable.getNonEmptyBucketIndices();
+        Instant now = Instant.now();
+        for (int i = 0; i < buckets.size(); i++) {
+            int idx = buckets.get(i);
+            Instant last = lastRefreshedAt.get(idx);
+            if (last != null && Duration.between(last, now).compareTo(refreshInterval) < 0) {
+                continue;
+            }
+            lastRefreshedAt.put(idx, now);
+            byte[] target = (idx == 0)
+                    ? flipTopBit(selfKey)
+                    : XorId.generateRandomKeyForBucket(selfKey, idx);
+            runRefreshQuery(target);
+            // Gap logic (go-libp2p rt_refresh_manager): a CPL that becomes empty
+            // only warrants refreshing the CPLs close to the gap, not all the way
+            // up to the highest tracked CPL.
+            if (idx > 0 && routingTable.getBucket(idx).size() == 0) {
+                int lastCpl = Math.min(2 * (idx + 1), buckets.get(buckets.size() - 1));
+                for (int j = i + 1; j < buckets.size() && buckets.get(j) <= lastCpl; j++) {
+                    int gapIdx = buckets.get(j);
+                    lastRefreshedAt.put(gapIdx, now);
+                    runRefreshQuery(XorId.generateRandomKeyForBucket(selfKey, gapIdx));
+                }
+                return;
+            }
         }
-        return peers;
+    }
+
+    private byte[] flipTopBit(byte[] key) {
+        byte[] copy = key.clone();
+        copy[0] = (byte) (copy[0] ^ (byte) 0x80);
+        return copy;
+    }
+
+    private void runRefreshQuery(byte[] target) {
+        if (host == null || protocol == null) return;
+        try {
+            List<KadPeer> seed = routingTable.findClosest(target, k);
+            if (seed.isEmpty()) return;
+
+            IterativeLookup lookup = new IterativeLookup(target, target, seed, k, alpha, beta, peerTimeout, protocol);
+            lookup.setHost(host);
+            lookup.setLookupRoutingTable(routingTable);
+            lookup.setRefreshMode(true);
+
+            java.util.concurrent.atomic.AtomicReference<QueryScheduler> qsRef =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            QueryScheduler qs = new QueryScheduler(alpha, lookup, next -> {
+                return protocol.sendFindNode(target, next)
+                        .thenAccept(result -> {
+                            lookup.onResponse(next, result.closerPeers());
+                            QueryScheduler q = qsRef.get();
+                            if (q != null) q.submitPeers(lookup.drainNewlyHeard());
+                        })
+                        .exceptionally(ex -> {
+                            lookup.onFailure(next);
+                            return null;
+                        });
+            });
+            qsRef.set(qs);
+
+            List<PeerId> initialPeers = new ArrayList<>();
+            for (IterativeLookup.PeerEntry pe : lookup.getAllPeerEntries()) {
+                if (pe.getState() == IterativeLookup.PeerStateInner.NOT_CONTACTED) {
+                    initialPeers.add(pe.getPeerId());
+                }
+            }
+            qs.submitPeers(initialPeers);
+            qs.awaitCompletion().get(peerTimeout.toSeconds(), TimeUnit.SECONDS);
+        } catch (Exception ignored) {}
+    }
+
+    private void pingAndEvictPeers() {
+        Instant graceThreshold = Instant.now().minus(refreshInterval);
+        List<CompletableFuture<Void>> tasks = new ArrayList<>();
+        for (int i = 0; i < routingTable.getBucketCount(); i++) {
+            for (KBucketEntry entry : routingTable.getBucket(i).getEntries()) {
+                Instant last = entry.getLastSeen();
+                if (last != null && last.isAfter(graceThreshold)) continue;
+                tasks.add(CompletableFuture.runAsync(() -> {
+                    try {
+                        boolean alive = protocol.pingLiveness(entry.peerId, PEER_PING_TIMEOUT)
+                                .get(PEER_PING_TIMEOUT.toSeconds(), TimeUnit.SECONDS);
+                        if (!alive) routingTable.remove(entry.peerId);
+                    } catch (Exception e) {
+                        routingTable.remove(entry.peerId);
+                    }
+                }));
+            }
+        }
+        if (tasks.isEmpty()) return;
+        try {
+            CompletableFuture.allOf(tasks.toArray(new CompletableFuture[0]))
+                    .get(PEER_PING_TIMEOUT.toSeconds() + 5, TimeUnit.SECONDS);
+        } catch (Exception ignored) {}
     }
 }
