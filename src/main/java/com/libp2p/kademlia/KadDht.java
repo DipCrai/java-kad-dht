@@ -374,6 +374,9 @@ public class KadDht {
                             if (successes.get() >= config.getWriteQuorum() && !quorumReached.isDone()) {
                                 quorumReached.complete(true);
                                 for (CompletableFuture<Boolean> ff : futures) ff.cancel(true);
+                            } else if (futures.stream().allMatch(CompletableFuture::isDone)
+                                    && !quorumReached.isDone()) {
+                                quorumReached.complete(false);
                             }
                         });
                     }

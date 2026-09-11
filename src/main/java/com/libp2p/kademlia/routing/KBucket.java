@@ -6,11 +6,10 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
-import java.util.concurrent.CopyOnWriteArrayList;
 
 public class KBucket {
     private final int k;
-    private final List<KBucketEntry> entries = new CopyOnWriteArrayList<>();
+    private final List<KBucketEntry> entries = new ArrayList<>();
     private final List<KBucketEntry> replacementCache = new ArrayList<>();
     private int bucketIndex;
     private PeerDiversityPolicy diversityPolicy;
@@ -27,6 +26,11 @@ public class KBucket {
             if (entries.get(i).peerId.equals(entry.peerId)) {
                 KBucketEntry existing = entries.remove(i);
                 existing.markSeen(Instant.now());
+                if (entry.getAddresses() != null) {
+                    for (io.libp2p.core.multiformats.Multiaddr addr : entry.getAddresses()) {
+                        existing.addAddress(addr);
+                    }
+                }
                 entries.add(0, existing);
                 return InsertResult.ALREADY_PRESENT;
             }
@@ -107,9 +111,9 @@ public class KBucket {
         }
     }
 
-    public List<KBucketEntry> getEntries() { return List.copyOf(entries); }
-    public int size() { return entries.size(); }
-    public boolean isFull() { return entries.size() >= k; }
+    public synchronized List<KBucketEntry> getEntries() { return List.copyOf(entries); }
+    public synchronized int size() { return entries.size(); }
+    public synchronized boolean isFull() { return entries.size() >= k; }
 
     public synchronized Optional<KBucketEntry> getOldest() {
         return entries.isEmpty() ? Optional.empty() : Optional.of(entries.get(entries.size() - 1));

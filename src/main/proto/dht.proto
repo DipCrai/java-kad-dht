@@ -1,3 +1,6 @@
+// Derived from the libp2p kad-dht wire schema (go-libp2p-kad-dht dht.proto).
+// Original: MIT + Apache-2.0 dual licensed, https://github.com/libp2p/go-libp2p-kad-dht
+// java_package/outer class name modified for this library.
 syntax = "proto2";
 
 package dht.pb;

@@ -234,11 +234,26 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
         List<KadPeer> closer = routingTable.findClosest(key, kValue);
         Dht.Message.Builder builder = Dht.Message.newBuilder().setType(Dht.Message.MessageType.FIND_NODE).setKey(ByteString.copyFrom(key));
         for (KadPeer p : closer) { if (!p.nodeId.equals(requester)) builder.addCloserPeers(toProtoPeer(p)); }
+        if (key.length > 0) {
+            try {
+                PeerId targetAsPeer = new PeerId(key);
+                boolean targetPresent = closer.stream().anyMatch(p -> p.nodeId.equals(targetAsPeer));
+                if (!targetAsPeer.equals(requester) && !targetPresent) {
+                    for (KadPeer p : routingTable.findClosest(key, Integer.MAX_VALUE)) {
+                        if (p.nodeId.equals(targetAsPeer)) {
+                            builder.addCloserPeers(toProtoPeer(p));
+                            break;
+                        }
+                    }
+                }
+            } catch (IllegalArgumentException ignored) {}
+        }
         return builder.build();
     }
 
     Dht.Message handleGetValue(Dht.Message req, PeerId requester) {
         byte[] key = req.getKey().toByteArray();
+        if (key.length == 0) return Dht.Message.newBuilder().setType(Dht.Message.MessageType.GET_VALUE).build();
         Dht.Message.Builder builder = Dht.Message.newBuilder().setType(Dht.Message.MessageType.GET_VALUE).setKey(ByteString.copyFrom(key));
         if (recordStore != null) {
             Record record = recordStore.get(key);
@@ -259,6 +274,9 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
         Dht.Record pbRec = req.getRecord();
         if (pbRec.getKey().isEmpty()) return Dht.Message.newBuilder().setType(Dht.Message.MessageType.PUT_VALUE).build();
         byte[] key = pbRec.getKey().toByteArray();
+        if (!Arrays.equals(key, req.getKey().toByteArray())) {
+            return Dht.Message.newBuilder().setType(Dht.Message.MessageType.PUT_VALUE).build();
+        }
         byte[] value = pbRec.getValue().toByteArray();
         if (recordStore != null && value.length > 0) {
             if (!validator.validate(key, value)) return Dht.Message.newBuilder().setType(Dht.Message.MessageType.PUT_VALUE).build();
@@ -281,6 +299,7 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
             if (!providerId.equals(requester)) continue;
             List<Multiaddr> addrs = new ArrayList<>();
             for (ByteString ab : p.getAddrsList()) { try { addrs.add(Multiaddr.deserialize(ab.toByteArray())); } catch (Exception ignored) {} }
+            if (addrs.isEmpty()) continue;
             if (providerStore != null) {
                 providerStore.addProvider(new ProviderRecord(key, providerId, Instant.now().plus(providerRecordTTL), Instant.now().plus(providerAddrTTL), addrs));
             }
@@ -290,6 +309,9 @@ public class KademliaProtocol implements ProtocolBinding<KademliaProtocol.Kademl
 
     Dht.Message handleGetProviders(Dht.Message req, PeerId requester) {
         byte[] key = req.getKey().toByteArray();
+        if (key.length == 0 || key.length > 80) {
+            return Dht.Message.newBuilder().setType(Dht.Message.MessageType.GET_PROVIDERS).build();
+        }
         Dht.Message.Builder builder = Dht.Message.newBuilder().setType(Dht.Message.MessageType.GET_PROVIDERS).setKey(ByteString.copyFrom(key));
         if (providerStore != null) {
             for (ProviderRecord pr : providerStore.getProviders(key)) {

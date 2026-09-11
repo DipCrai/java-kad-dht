@@ -23,7 +23,7 @@ public class IterativeLookup {
     private final KademliaProtocol protocol;
     private LookupState state = LookupState.ITERATING;
     private int noProgressCount;
-    private final List<PeerEntry> peers = new ArrayList<>();
+    private final List<PeerEntry> peers = new CopyOnWriteArrayList<>();
     private volatile io.libp2p.core.Host host;
     private final List<com.libp2p.kademlia.records.Record> candidateRecords = new ArrayList<>();
     private final List<com.libp2p.kademlia.records.ProviderRecord> collectedProviders = new ArrayList<>();

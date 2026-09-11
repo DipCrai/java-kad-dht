@@ -32,8 +32,7 @@ public class DefaultPeerDiversityPolicy implements PeerDiversityPolicy {
         if (subnet == null) return true;
         Map<String, AtomicInteger> subnets = bucketSubnets.computeIfAbsent(bucketIndex, k -> new ConcurrentHashMap<>());
         AtomicInteger count = subnets.computeIfAbsent(subnet, k -> new AtomicInteger(0));
-        if (count.get() > 0) return false;
-        count.incrementAndGet();
+        if (!count.compareAndSet(0, 1)) return false;
         return true;
     }
 

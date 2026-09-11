@@ -56,17 +56,23 @@ class MultihashValidationTest {
         out.add((byte) value);
     }
 
+    private Dht.Message.Peer selfProviderPeer() {
+        io.libp2p.core.multiformats.Multiaddr addr =
+                io.libp2p.core.multiformats.Multiaddr.fromString("/ip4/127.0.0.1/tcp/4001");
+        return Dht.Message.Peer.newBuilder()
+                .setId(ByteString.copyFrom(selfPeer.getBytes()))
+                .setConnection(Dht.Message.ConnectionType.CONNECTED)
+                .addAddrs(ByteString.copyFrom(addr.serialize()))
+                .build();
+    }
+
     @Test
     void testValidSHA256() {
         byte[] key = createMultihashKey(0x12, 32);
-        Dht.Message.Peer selfPeerMsg = Dht.Message.Peer.newBuilder()
-                .setId(ByteString.copyFrom(selfPeer.getBytes()))
-                .setConnection(Dht.Message.ConnectionType.CONNECTED)
-                .build();
         Dht.Message req = Dht.Message.newBuilder()
                 .setType(Dht.Message.MessageType.ADD_PROVIDER)
                 .setKey(ByteString.copyFrom(key))
-                .addProviderPeers(selfPeerMsg)
+                .addProviderPeers(selfProviderPeer())
                 .build();
 
         Dht.Message response = protocol.handleAddProvider(req, selfPeer);
@@ -77,14 +83,10 @@ class MultihashValidationTest {
     @Test
     void testValidMultihash() {
         byte[] key = createMultihashKey(0x17, 20);
-        Dht.Message.Peer selfPeerMsg = Dht.Message.Peer.newBuilder()
-                .setId(ByteString.copyFrom(selfPeer.getBytes()))
-                .setConnection(Dht.Message.ConnectionType.CONNECTED)
-                .build();
         Dht.Message req = Dht.Message.newBuilder()
                 .setType(Dht.Message.MessageType.ADD_PROVIDER)
                 .setKey(ByteString.copyFrom(key))
-                .addProviderPeers(selfPeerMsg)
+                .addProviderPeers(selfProviderPeer())
                 .build();
 
         protocol.handleAddProvider(req, selfPeer);
