@@ -6,6 +6,7 @@ import com.libp2p.kademlia.config.KadMode;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -155,5 +156,18 @@ class KadConfigTest {
                 .build();
         assertEquals(Duration.ofMinutes(10), config.getBootstrapAddressTTL());
         assertEquals(Duration.ofMinutes(45), config.getPeerAddressTTL());
+    }
+
+    @Test
+    void testSelfAddressesDefaultNull() {
+        assertNull(KadConfig.builder().build().getSelfAddresses());
+    }
+
+    @Test
+    void testSelfAddressesSupplier() {
+        List<io.libp2p.core.multiformats.Multiaddr> addrs = List.of(
+                io.libp2p.core.multiformats.Multiaddr.fromString("/ip4/203.0.113.7/tcp/48868"));
+        KadConfig config = KadConfig.builder().selfAddresses(() -> addrs).build();
+        assertSame(addrs, config.getSelfAddresses().get());
     }
 }

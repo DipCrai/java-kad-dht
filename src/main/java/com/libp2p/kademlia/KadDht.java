@@ -543,7 +543,7 @@ public class KadDht {
                     // peers the lookup found — "I provide this key" is true even
                     // before anyone has been announced to.
                     ProviderRecord local = new ProviderRecord(key, host.getPeerId(),
-                            Instant.now().plus(config.getProviderRecordTTL()), Instant.now().plus(config.getProviderAddrTTL()), getSelfAddresses());
+                            Instant.now().plus(config.getProviderRecordTTL()), Instant.now().plus(config.getProviderAddrTTL()), announcedSelfAddresses());
                     providerStore.addProvider(local);
                     metrics.providersStored.incrementAndGet();
 
@@ -895,5 +895,12 @@ public class KadDht {
         if (addrs != null && !addrs.isEmpty()) return new ArrayList<>(addrs);
         try { return new ArrayList<>(host.getAddressBook().getAddrs(host.getPeerId()).get(2, TimeUnit.SECONDS)); }
         catch (Exception e) { return List.of(); }
+    }
+
+    private List<Multiaddr> announcedSelfAddresses() {
+        java.util.function.Supplier<List<Multiaddr>> supplier = config.getSelfAddresses();
+        List<Multiaddr> addrs = supplier != null ? supplier.get() : null;
+        if (addrs != null && !addrs.isEmpty()) return new ArrayList<>(addrs);
+        return getSelfAddresses();
     }
 }

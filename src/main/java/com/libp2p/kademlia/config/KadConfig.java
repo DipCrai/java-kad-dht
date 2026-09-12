@@ -16,6 +16,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.function.Supplier;
 
 /**
  * Immutable configuration for {@link com.libp2p.kademlia.KadDht}.
@@ -77,6 +78,7 @@ public class KadConfig {
     private final Duration providerProvideTimeout;
     private final Duration providerFindTimeout;
     private final Duration providerMergeGrace;
+    private final Supplier<List<Multiaddr>> selfAddresses;
     private final DelegatedRoutingFactory delegatedRoutingFactory;
     private final PeerSource peerSource;
 
@@ -122,6 +124,7 @@ public class KadConfig {
         this.providerProvideTimeout = builder.providerProvideTimeout;
         this.providerFindTimeout = builder.providerFindTimeout;
         this.providerMergeGrace = builder.providerMergeGrace;
+        this.selfAddresses = builder.selfAddresses;
         this.delegatedRoutingFactory = builder.delegatedRoutingFactory;
         this.peerSource = builder.httpBootstrapFallback && builder.peerSource == null
                 ? resolveDefaultPeerSource()
@@ -258,6 +261,13 @@ public class KadConfig {
     public Duration getProviderMergeGrace() { return providerMergeGrace; }
 
     /**
+     * @return a supplier returning the addresses this node advertises in its
+     *         provider records, or {@code null} to fall back to the host's
+     *         listen addresses
+     */
+    public Supplier<List<Multiaddr>> getSelfAddresses() { return selfAddresses; }
+
+    /**
      * @return factory that builds the delegated routing path given the resolved
      *         peer source, hosts and kad protocol; defaults to
      *         {@link HttpDelegatedRouting} over the configured HTTP routers
@@ -331,6 +341,7 @@ public class KadConfig {
         private Duration providerProvideTimeout = Duration.ofSeconds(10);
         private Duration providerFindTimeout = Duration.ofSeconds(15);
         private Duration providerMergeGrace = Duration.ofMillis(250);
+        private Supplier<List<Multiaddr>> selfAddresses;
         private DelegatedRoutingFactory delegatedRoutingFactory;
         private PeerSource peerSource;
 
@@ -377,6 +388,16 @@ public class KadConfig {
         public Builder providerProvideTimeout(Duration providerProvideTimeout) { this.providerProvideTimeout = providerProvideTimeout; return this; }
         public Builder providerFindTimeout(Duration providerFindTimeout) { this.providerFindTimeout = providerFindTimeout; return this; }
         public Builder providerMergeGrace(Duration providerMergeGrace) { this.providerMergeGrace = providerMergeGrace; return this; }
+
+        /**
+         * Sets the function that returns the self addresses of the node.
+         * These addresses are written in the provider records advertised by
+         * the node (mirrors go-libp2p-kad-dht's {@code WithSelfAddrs}).
+         *
+         * @param selfAddresses supplier of the announced addresses, or null to
+         *                      default to the host's listen addresses
+         */
+        public Builder selfAddresses(Supplier<List<Multiaddr>> selfAddresses) { this.selfAddresses = selfAddresses; return this; }
         public Builder delegatedRoutingFactory(DelegatedRoutingFactory delegatedRoutingFactory) { this.delegatedRoutingFactory = delegatedRoutingFactory; return this; }
         public Builder peerSource(PeerSource peerSource) { this.peerSource = peerSource; return this; }
 
